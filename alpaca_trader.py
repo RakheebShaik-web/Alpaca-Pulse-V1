@@ -10,12 +10,13 @@ from typing import Optional, Dict, List
 
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import (
-    MarketOrderRequest, LimitOrderRequest,
-    TakeProfitRequest, StopLossRequest, BracketOrderRequest,
+    MarketOrderRequest, LimitOrderRequest, OrderRequest,
+    TakeProfitRequest, StopLossRequest,
     GetOrdersRequest
 )
 from alpaca.trading.enums import (
     OrderSide, TimeInForce, OrderType, QueryOrderStatus,
+    OrderClass
 )
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockLatestQuoteRequest, StockBarsRequest
@@ -201,11 +202,14 @@ class AlpacaTrader:
         try:
             order_side = OrderSide.BUY if side == SignalSide.BUY else OrderSide.SELL
             
-            order = self.trading_client.submit_order(BracketOrderRequest(
+            # Use OrderRequest with OrderClass.BRACKET
+            order = self.trading_client.submit_order(OrderRequest(
                 symbol=symbol,
                 qty=qty,
                 side=order_side,
+                type=OrderType.MARKET,
                 time_in_force=TimeInForce.DAY,
+                order_class=OrderClass.BRACKET,
                 take_profit=TakeProfitRequest(limit_price=target_price),
                 stop_loss=StopLossRequest(stop_price=stop_price),
             ))
