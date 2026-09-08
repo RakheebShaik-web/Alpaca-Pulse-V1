@@ -1,128 +1,107 @@
-# Algo Trading System
+# Pulse V1 - Automated Trading System
 
-Pre-Market Momentum + Opening Range Breakout strategy for US stocks.
+Algorithmic trading system for US stocks using Alpaca Markets.
 
-## Strategy Overview
+## Strategy
 
 | Component | Details |
 |-----------|---------|
-| **Setup** | Pre-market gap scan (2%+ gap, 100k+ volume) |
+| **Setup** | Pre-market gap scan (0.3%+ gap, 100k+ volume) |
 | **Entry** | Opening Range Breakout (9:30-9:45 AM range) |
-| **Confirmation** | VWAP + EMA9 trend filter |
+| **Confirmation** | VWAP trend filter |
 | **Stop Loss** | Fixed $50 per trade |
-| **Take Profit** | 1.5:1 reward-to-risk |
-| **Time Exit** | 10:50 AM (avoid midday chop) |
-| **Daily Limits** | Max 3 trades, $100 loss, $150 profit target |
+| **Take Profit** | 2:1 reward-to-risk |
+| **Time Exit** | 10:50 AM |
+| **Daily Limits** | Max 3 trades, $200 loss, $150 profit target |
 
-## Backtest Results (60 days, Yahoo Finance data)
+## Architecture
 
-| Symbol | Return | Win Rate | Trades | Profit Factor | Max DD |
-|--------|--------|----------|--------|---------------|--------|
-| **TSLA** | **+1.28%** | **60.0%** | 35 | **1.75** | 0.92% |
-| SPY | +0.66% | 52.6% | 19 | 1.87 | 0.93% |
-| AMD | +0.03% | 39.4% | 33 | 0.89 | 1.14% |
-| NVDA | -0.73% | 45.5% | 33 | 0.67 | 1.35% |
-| COIN | -0.65% | 46.3% | 41 | 0.71 | 1.34% |
+```
+┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
+│   Dashboard     │────▶│   FastAPI       │────▶│   Alpaca        │
+│   (Vercel)      │◀────│   (Render)      │◀────│   Markets       │
+└─────────────────┘     └─────────────────┘     └─────────────────┘
+        │                       │
+        │                       ▼
+        │               ┌─────────────────┐
+        └──────────────▶│   Discord       │
+                        │   Alerts        │
+                        └─────────────────┘
+```
 
-**Best performer: TSLA** — 60% win rate, 1.75 profit factor, only 0.92% max drawdown.
+## Repositories
 
-### Monthly Projection (TSLA-like performance)
+| Repo | Purpose | Deploy |
+|------|---------|--------|
+| [Alpaca-Pulse-V1](https://github.com/RakheebShaik-web/Alpaca-Pulse-V1) | Backend + Strategy | Render |
+| [Pulse-V1-dashboard](https://github.com/RakheebShaik-web/Pulse-V1-dashboard) | Frontend Dashboard | Vercel |
 
-| Metric | Value |
-|--------|-------|
-| Avg daily PnL | ~$43 |
-| Monthly (20 days) | ~$860 |
-| Win rate needed for $150/day | ~70% |
+## 6-Month Backtest Results ($20k capital, $50/trade)
 
-## Setup
+| Rank | Symbol | Return | Win Rate | Trades | Profit Factor | Max DD |
+|------|--------|--------|----------|--------|---------------|--------|
+| 🥇 | AMZN | +2.19% | 50% | 14 | 7.79 | 0.34% |
+| 🥈 | SPY | +1.12% | 58% | 12 | 6.76 | 0.38% |
+| 🥉 | AAPL | +1.09% | 62% | 21 | 2.85 | 0.39% |
+| 4 | GOOGL | +0.97% | 60% | 15 | 2.33 | 0.49% |
+| 5 | AMD | +0.48% | 45% | 20 | 1.46 | 0.57% |
+| 6 | QQQ | +0.36% | 50% | 20 | 1.30 | 0.75% |
+| 7 | META | +0.17% | 61% | 18 | 1.29 | 0.41% |
+| 8 | TSLA | +0.37% | 55% | 22 | 1.26 | 0.93% |
+| 9 | MSFT | +0.06% | 50% | 20 | 1.07 | 0.59% |
 
-### 1. Install dependencies
+**Universe:** AMZN, SPY, AAPL, GOOGL, AMD, QQQ, META, TSLA, MSFT
+
+## Backend API
+
+### Start
 
 ```bash
 pip install -r requirements.txt
+uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
-### 2. Configure environment
+### Endpoints
 
-```bash
-cp .env.example .env
-# Edit .env with your Alpaca API keys
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/status` | GET | System status |
+| `/api/account` | GET | Account details |
+| `/api/positions` | GET | Active positions |
+| `/api/orders` | GET | Open/closed orders |
+| `/api/trades` | GET | Trade history |
+| `/api/daily` | GET | Daily statistics |
+| `/api/scan` | GET | Pre-market scan results |
+| `/api/clock` | GET | Market clock |
+| `/api/price/{symbol}` | GET | Latest price |
+| `/api/start` | POST | Start trading |
+| `/api/stop` | POST | Stop trading |
+| `/api/close-all` | POST | Close all positions |
+| `/api/cancel-all` | POST | Cancel all orders |
+
+### Environment Variables
+
+```
+ALPACA_API_KEY=***
+ALPACA_SECRET_KEY=***
+PAPER_TRADING=true
+DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/... (optional)
 ```
 
-### 3. Get Alpaca API keys
+## Render Deployment
 
-1. Sign up at [alpaca.markets](https://alpaca.markets)
-2. Get paper trading keys first
-3. Add them to `.env`
+1. Create new Web Service
+2. Import `RakheebShaik-web/Alpaca-Pulse-V1`
+3. Set environment variables
+4. Deploy
 
-### 4. Set up Discord webhook (optional)
+## Vercel Dashboard
 
-1. In Discord, go to Server Settings → Integrations → Webhooks
-2. Create a webhook and copy the URL
-3. Add to `.env` as `DISCORD_WEBHOOK_URL`
-
-## Usage
-
-### Backtest
-
-```bash
-# Backtest a symbol
-python backtest.py SPY 60
-
-# Backtest with Discord alerts
-python backtest.py TSLA 60 "https://discord.com/api/webhooks/..."
-```
-
-### Paper Trade
-
-```bash
-# Make sure PAPER_TRADING=true in .env
-python live_trader.py
-```
-
-### Live Trade
-
-```bash
-# Set PAPER_TRADING=false in .env
-python live_trader.py
-```
-
-## Discord Alerts
-
-The bot sends formatted alerts for:
-
-- 🔍 Pre-market scan results
-- 🟢/🔴 Trade entries with entry/stop/target
-- ✅/❌ Trade exits with PnL
-- 📈 Daily summary
+See [Pulse-V1-dashboard](https://github.com/RakheebShaik-web/Pulse-V1-dashboard) for the frontend.
 
 ## Risk Warnings
 
-1. **PDT Rule**: With $20k in a margin account, you're limited to 3 day trades per 5-day period. Use a **cash account** to avoid this.
-2. **Past performance ≠ future results** — backtests don't account for slippage, fills, or changing market conditions.
-3. **Start with paper trading** — prove the strategy works with your execution before risking real money.
-4. **Never risk more than you can afford to lose** — $50/trade means max $150/day loss.
-
-## File Structure
-
-```
-algo-trading/
-├── .env                  # API keys (don't commit)
-├── .env.example          # Template
-├── config.py             # Strategy parameters
-├── backtest.py           # Backtesting engine
-├── live_trader.py        # Live trading bot
-├── discord_notifier.py   # Discord alerts
-├── requirements.txt      # Dependencies
-└── trading.log           # Trade log (generated)
-```
-
-## Tuning Parameters
-
-Edit `config.py` to adjust:
-
-- `gap_threshold` — minimum gap % (default 0.3%)
-- `risk_per_trade` — $ risk per trade (default $50)
-- `rr_ratio` — reward-to-risk ratio (default 1.5)
-- `max_trades_per_day` — daily trade limit (default 3)
-- `universe` — stock symbols to scan
+- **Past performance ≠ future results**
+- Start with paper trading
+- $50/trade = max $150/day loss
+- Never risk more than you can afford to lose
