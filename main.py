@@ -35,8 +35,8 @@ logger = logging.getLogger(__name__)
 
 class TradingState:
     def __init__(self):
-        self.trader = AlpacaTrader()
-        self.notifier = DiscordNotifier(os.getenv('DISCORD_WEBHOOK_URL', ''))
+        self._trader = None
+        self._notifier = None
         self.status = TradingStatus.STOPPED
         self.mode = "paper"
         self.start_time = None
@@ -53,6 +53,20 @@ class TradingState:
         self.pm_open = None
         self.prev_close = None
         self.todays_setups: List[dict] = []
+    
+    @property
+    def trader(self) -> AlpacaTrader:
+        """Lazy initialization of the trader."""
+        if self._trader is None:
+            self._trader = AlpacaTrader()
+        return self._trader
+    
+    @property
+    def notifier(self) -> DiscordNotifier:
+        """Lazy initialization of the notifier."""
+        if self._notifier is None:
+            self._notifier = DiscordNotifier(os.getenv('DISCORD_WEBHOOK_URL', ''))
+        return self._notifier
     
     def reset_daily(self, date):
         """Reset daily counters."""
