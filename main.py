@@ -164,7 +164,7 @@ async def root():
 
 @app.get("/api/status", response_model=SystemStatus)
 async def get_status():
-    """Get system status."""
+    """Get system status (public read-only)."""
     uptime = 0.0
     if state.start_time:
         uptime = (datetime.utcnow() - state.start_time).total_seconds()
@@ -180,17 +180,9 @@ async def get_status():
         buying_power=state.get_buying_power(),
     )
 
-@app.get("/api/account")
-async def get_account():
-    """Get account details."""
-    account = state.trader.get_account()
-    if not account:
-        raise HTTPException(status_code=500, detail="Failed to fetch account")
-    return account
-
 @app.get("/api/positions", response_model=List[Position])
 async def get_positions():
-    """Get current positions."""
+    """Get current positions (public read-only)."""
     positions = state.trader.get_positions()
     return [Position(
         symbol=p['symbol'],
@@ -198,31 +190,49 @@ async def get_positions():
         entry=p['entry_price'],
         current_price=p['current_price'],
         size=p['qty'],
-        stop=0.0,  # Would need to fetch from orders
+        stop=0.0,
         target=0.0,
         pnl=p['unrealized_pl'],
         pnl_pct=p['unrealized_plpc'],
-        entry_time=datetime.utcnow(),  # Approximation
+        entry_time=datetime.utcnow(),
     ) for p in positions]
-
-@app.get("/api/orders")
-async def get_orders(status: str = "open"):
-    """Get orders."""
-    return state.trader.get_orders(status)
 
 @app.get("/api/trades")
 async def get_trades():
-    """Get trade history."""
+    """Get trade history (public read-only)."""
     return state.trade_history
 
 @app.get("/api/daily")
 async def get_daily_stats():
-    """Get daily statistics."""
+    """Get daily statistics (public read-only)."""
     return state.daily_stats
+
+@app.get("/api/scan")
+async def get_scan():
+    """Get pre-market scan (public read-only)."""
+    return state.todays_setups
+
+@app.get("/api/clock")
+async def get_clock():
+    """Get market clock (public read-only)."""
+    clock = state.trader.get_clock()
+    if not clock:
+        raise HTTPException(status_code=500, detail="Failed to fetch clock")
+    return clock
+
+@app.get("/api/account")
+async def get_account():
+    """Get account details (public read-only)."""
+    account = state.trader.get_account()
+    if not account:
+        raise HTTPException(status_code=500, detail="Failed to fetch account")
+    return account
+
+# ─── Admin-only endpoints (require API key) ─────────────────────────
 
 @app.post("/api/start")
 async def start_trading(_=Depends(require_admin_key)):
-    """Start the trading system."""
+    """Start the trading system (admin only)."""
     if state.status == TradingStatus.RUNNING:
         return {"status": "already_running"}
     
