@@ -17,6 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 import uvicorn
+import aiohttp
 
 from config import config
 from alpaca_trader import AlpacaTrader
@@ -31,6 +32,22 @@ logging.basicConfig(
     format='%(asctime)s | %(levelname)s | %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+# ──────────────────────────────────────────────────────────────────────
+# Keep-alive ping (prevents Render from spinning down)
+# ──────────────────────────────────────────────────────────────────────
+
+async def keep_alive_ping():
+    """Ping the service every 10 minutes to prevent Render from spinning down."""
+    while True:
+        try:
+            await asyncio.sleep(600)  # 10 minutes
+            async with aiohttp.ClientSession() as session:
+                # Ping our own health endpoint
+                async with session.get(f"http://localhost:{os.getenv('PORT', '8000')}/") as resp:
+                    logger.info(f"Keep-alive ping: {resp.status}")
+        except Exception as e:
+            logger.debug(f"Keep-alive ping failed: {e}")
 
 # ──────────────────────────────────────────────────────────────────────
 # Authentication
@@ -135,7 +152,13 @@ state = TradingState()
 async def lifespan(app: FastAPI):
     """Manage app lifecycle."""
     logger.info("Trading system starting...")
+    
+    # Start keep-alive ping in background (prevents Render from spinning down)
+    keep_alive_task = asyncio.create_task(keep_alive_ping())
+    
     yield
+    
+    keep_alive_task.cancel()
     logger.info("Trading system shutting down...")
 
 app = FastAPI(
