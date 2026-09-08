@@ -24,7 +24,7 @@ class StrategyConfig:
 
     # ─── Timing ──────────────────────────────────────────────────
     trading_start: time = time(9, 30)
-    trading_end: time = time(11, 0)
+    trading_end: time = time(15, 50)  # 3:50 PM — 10 mins before market close
     or_start: time = time(9, 30)       # Opening range start
     or_end: time = time(9, 45)         # Opening range end
 

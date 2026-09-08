@@ -352,7 +352,7 @@ async def trading_loop():
                 continue
             
             # === TRADING HOURS: Execute ===
-            if dtime(9, 45) <= current_time < dtime(11, 0):
+            if dtime(9, 45) <= current_time < config.trading_end:
                 # Check daily limits
                 if state.trades_today >= config.max_trades_per_day:
                     await asyncio.sleep(60)
@@ -428,8 +428,8 @@ async def trading_loop():
                 await asyncio.sleep(30)
                 continue
             
-            # === POST-TRADE: Close all ===
-            if current_time >= dtime(11, 0):
+            # === POST-TRADE: Close all at 3:50 PM ===
+            if current_time >= config.trading_end:
                 if state.active_positions:
                     state.trader.close_all_positions()
                     state.active_positions.clear()

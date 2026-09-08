@@ -327,8 +327,8 @@ class MomentumORB(bt.Strategy):
                     self.all_trades.append({'pnl': pnl})
                     self._reset_active()
                     self.order = None
-                # Time exit at 10:50 AM
-                elif current_time.hour == 10 and current_time.minute >= 50:
+                # Time exit at 3:50 PM (10 mins before market close)
+                elif current_time.hour == 15 and current_time.minute >= 50:
                     self.order = self.close()
                     pnl = (close - self.active_entry) * self.active_size
                     self.daily_pnl += pnl
@@ -355,8 +355,8 @@ class MomentumORB(bt.Strategy):
                     self.all_trades.append({'pnl': pnl})
                     self._reset_active()
                     self.order = None
-                # Time exit at 10:50 AM
-                elif current_time.hour == 10 and current_time.minute >= 50:
+                # Time exit at 3:50 PM (10 mins before market close)
+                elif current_time.hour == 15 and current_time.minute >= 50:
                     self.order = self.close()
                     pnl = (self.active_entry - close) * self.active_size
                     self.daily_pnl += pnl
