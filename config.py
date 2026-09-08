@@ -28,10 +28,10 @@ class StrategyConfig:
     or_start: time = time(9, 30)       # Opening range start
     or_end: time = time(9, 45)         # Opening range end
 
-    # ─── Universe (top 10 liquid names, no PLTR) ──────────────────
+    # ─── Universe (top liquid names, NVDA removed - negative PF) ──
     universe: Tuple[str, ...] = (
-        'QQQ', 'SPY', 'AAPL', 'MSFT', 'GOOGL',
-        'AMZN', 'META', 'NVDA', 'TSLA', 'AMD',
+        'AMZN', 'SPY', 'AAPL', 'GOOGL', 'AMD',
+        'QQQ', 'META', 'TSLA', 'MSFT',
     )
 
     # ─── Backtest ────────────────────────────────────────────────
