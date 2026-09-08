@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: pulse-v1-api
+    env: python
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "uvicorn main:app --host 0.0.0.0 --port $PORT"
+    envVars:
+      - key: ALPACA_API_KEY
+        sync: false
+      - key: ALPACA_SECRET_KEY
+        sync: false
+      - key: PAPER_TRADING
+        value: "true"
+      - key: DISCORD_WEBHOOK_URL
+        sync: false
+    healthCheckPath: "/"
+    autoDeploy: true
