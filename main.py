@@ -38,14 +38,13 @@ logger = logging.getLogger(__name__)
 # ──────────────────────────────────────────────────────────────────────
 
 async def keep_alive_ping():
-    """Ping the service every 10 minutes to prevent Render from spinning down."""
+    """Ping every 5 minutes to prevent Render from spinning down."""
     while True:
         try:
-            await asyncio.sleep(600)  # 10 minutes
+            await asyncio.sleep(300)  # 5 minutes
             async with aiohttp.ClientSession() as session:
-                # Ping our own health endpoint
                 async with session.get(f"http://localhost:{os.getenv('PORT', '8000')}/") as resp:
-                    logger.info(f"Keep-alive ping: {resp.status}")
+                    logger.debug(f"Keep-alive ping: {resp.status}")
         except Exception as e:
             logger.debug(f"Keep-alive ping failed: {e}")
 
@@ -61,7 +60,10 @@ def require_admin_key(credentials: HTTPAuthorizationCredentials = Depends(securi
     if not admin_key:
         # If no admin key is set, allow all requests (backward compatible)
         return True
-    if not secrets.compare_digest(credentials.credentials, admin_key):
+    # Case-insensitive comparison
+    provided = credentials.credentials.strip().lower()
+    expected = admin_key.strip().lower()
+    if not secrets.compare_digest(provided, expected):
         raise HTTPException(status_code=401, detail="Invalid API key")
     return True
 
@@ -374,7 +376,12 @@ async def trading_loop():
             current_time = now.time()
             
             # Check if market is open
-            if not state.trader.is_market_open():
+            try:
+                if not state.trader.is_market_open():
+                    await asyncio.sleep(60)
+                    continue
+            except Exception as e:
+                logger.warning(f"Market check failed: {e}")
                 await asyncio.sleep(60)
                 continue
             
@@ -382,24 +389,30 @@ async def trading_loop():
             if dtime(4, 0) <= current_time < dtime(9, 30):
                 # Scan for setups once per hour
                 if now.minute < 5:
-                    state.todays_setups = scan_for_setups()
-                    if state.todays_setups:
-                        state.notifier.send_scan_results(state.todays_setups)
+                    try:
+                        state.todays_setups = scan_for_setups()
+                        if state.todays_setups:
+                            state.notifier.send_scan_results(state.todays_setups)
+                    except Exception as e:
+                        logger.error(f"Scan error: {e}")
                 await asyncio.sleep(30)
                 continue
             
             # === OPENING RANGE: Build OR ===
             if dtime(9, 30) <= current_time < dtime(9, 45):
                 # Track opening range
-                for symbol in config.universe:
-                    price = state.trader.get_latest_price(symbol)
-                    if price:
-                        if state.or_high is None:
-                            state.or_high = price
-                            state.or_low = price
-                        else:
-                            state.or_high = max(state.or_high, price)
-                            state.or_low = min(state.or_low, price)
+                try:
+                    for symbol in config.universe:
+                        price = state.trader.get_latest_price(symbol)
+                        if price:
+                            if state.or_high is None:
+                                state.or_high = price
+                                state.or_low = price
+                            else:
+                                state.or_high = max(state.or_high, price)
+                                state.or_low = min(state.or_low, price)
+                except Exception as e:
+                    logger.error(f"OR tracking error: {e}")
                 await asyncio.sleep(30)
                 continue
             
@@ -418,64 +431,61 @@ async def trading_loop():
                 
                 # Execute setups
                 if state.todays_setups and not state.active_positions:
-                    for setup in state.todays_setups[:3]:  # Top 3
-                        symbol = setup['symbol']
-                        
-                        # Skip if already in position
-                        if state.trader.get_position(symbol):
-                            continue
-                        
-                        # Get current price
-                        price = state.trader.get_latest_price(symbol)
-                        if not price:
-                            continue
-                        
-                        # Calculate entry, stop, target
-                        direction = setup['direction']
-                        if direction == 'long':
-                            entry = price
-                            stop = entry * 0.995
-                            risk = entry - stop
-                            target = entry + (risk * config.rr_ratio)
-                        else:
-                            entry = price
-                            stop = entry * 1.005
-                            risk = stop - entry
-                            target = entry - (risk * config.rr_ratio)
-                        
-                        # Calculate position size
-                        size = max(1, int(config.risk_per_trade / risk))
-                        
-                        # Submit bracket order
-                        result = state.trader.submit_bracket_order(
-                            symbol=symbol,
-                            qty=size,
-                            side=SignalSide.BUY if direction == 'long' else SignalSide.SELL,
-                            stop_price=round(stop, 2),
-                            target_price=round(target, 2),
-                        )
-                        
-                        if result:
-                            state.trades_today += 1
-                            state.active_positions[symbol] = {
-                                'side': direction,
-                                'entry': entry,
-                                'stop': stop,
-                                'target': target,
-                                'size': size,
-                            }
+                    for setup in state.todays_setups[:3]:
+                        try:
+                            symbol = setup['symbol']
                             
-                            # Discord alert
-                            state.notifier.send_trade_alert({
-                                'symbol': symbol,
-                                'direction': direction.upper(),
-                                'entry': entry,
-                                'stop': stop,
-                                'target': target,
-                                'size': size,
-                                'risk': risk * size,
-                                'gap_pct': setup['gap_pct'],
-                            })
+                            if state.trader.get_position(symbol):
+                                continue
+                            
+                            price = state.trader.get_latest_price(symbol)
+                            if not price:
+                                continue
+                            
+                            direction = setup['direction']
+                            if direction == 'long':
+                                entry = price
+                                stop = entry * 0.995
+                                risk = entry - stop
+                                target = entry + (risk * config.rr_ratio)
+                            else:
+                                entry = price
+                                stop = entry * 1.005
+                                risk = stop - entry
+                                target = entry - (risk * config.rr_ratio)
+                            
+                            size = max(1, int(config.risk_per_trade / risk))
+                            
+                            result = state.trader.submit_bracket_order(
+                                symbol=symbol,
+                                qty=size,
+                                side=SignalSide.BUY if direction == 'long' else SignalSide.SELL,
+                                stop_price=round(stop, 2),
+                                target_price=round(target, 2),
+                            )
+                            
+                            if result:
+                                state.trades_today += 1
+                                state.active_positions[symbol] = {
+                                    'side': direction,
+                                    'entry': entry,
+                                    'stop': stop,
+                                    'target': target,
+                                    'size': size,
+                                }
+                                
+                                state.notifier.send_trade_alert({
+                                    'symbol': symbol,
+                                    'direction': direction.upper(),
+                                    'entry': entry,
+                                    'stop': stop,
+                                    'target': target,
+                                    'size': size,
+                                    'risk': risk * size,
+                                    'gap_pct': setup['gap_pct'],
+                                })
+                        except Exception as e:
+                            logger.error(f"Trade execution error: {e}")
                 
                 await asyncio.sleep(30)
                 continue
