@@ -48,6 +48,31 @@ async def keep_alive_ping():
         except Exception as e:
             logger.debug(f"Keep-alive ping failed: {e}")
 
+
+# ──────────────────────────────────────────────────────────────────────
+# Watchdog - restarts trading loop if it dies
+# ──────────────────────────────────────────────────────────────────────
+
+async def watchdog():
+    """Monitors trading loop and restarts if it dies."""
+    while True:
+        await asyncio.sleep(30)  # Check every 30 seconds
+        
+        if state.status == TradingStatus.RUNNING:
+            # Check if trading loop task is alive
+            if hasattr(state, '_trading_task') and state._trading_task:
+                if state._trading_task.done():
+                    # Task died - restart it
+                    try:
+                        exc = state._trading_task.exception()
+                        if exc:
+                            logger.error(f"Trading loop crashed: {exc}")
+                    except:
+                        logger.error("Trading loop died (unknown error)")
+                    
+                    logger.warning("Restarting trading loop...")
+                    state._trading_task = asyncio.create_task(_trading_loop_inner())
+
 # ──────────────────────────────────────────────────────────────────────
 # Authentication
 # ──────────────────────────────────────────────────────────────────────
@@ -158,9 +183,13 @@ async def lifespan(app: FastAPI):
     # Start keep-alive ping in background (prevents Render from spinning down)
     keep_alive_task = asyncio.create_task(keep_alive_ping())
     
+    # Start watchdog (restarts trading loop if it dies)
+    watchdog_task = asyncio.create_task(watchdog())
+    
     yield
     
     keep_alive_task.cancel()
+    watchdog_task.cancel()
     logger.info("Trading system shutting down...")
 
 app = FastAPI(
@@ -266,7 +295,7 @@ async def start_trading(_=Depends(require_admin_key)):
     state.start_time = datetime.utcnow()
     
     # Start the trading loop in background
-    asyncio.create_task(trading_loop())
+    state._trading_task = asyncio.create_task(_trading_loop_inner())
     
     state.notifier.send(f"**Trading Started** | Mode: {state.mode.upper()}")
     return {"status": "started", "mode": state.mode}
@@ -365,8 +394,8 @@ def scan_for_setups() -> List[dict]:
     setups.sort(key=lambda x: x['score'], reverse=True)
     return setups
 
-async def trading_loop():
-    """Main trading loop."""
+async def _trading_loop_inner():
+    """Main trading loop (inner)."""
     logger.info("Trading loop started")
     
     while state.status == TradingStatus.RUNNING:
