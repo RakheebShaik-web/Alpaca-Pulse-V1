@@ -6,12 +6,15 @@ Provides REST API for the dashboard and runs the strategy loop.
 import os
 import asyncio
 import logging
+import secrets
 from datetime import datetime, timedelta, time as dtime
 from typing import Optional, List, Dict
 from contextlib import asynccontextmanager
+from functools import wraps
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 import uvicorn
 
@@ -28,6 +31,22 @@ logging.basicConfig(
     format='%(asctime)s | %(levelname)s | %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+# ──────────────────────────────────────────────────────────────────────
+# Authentication
+# ──────────────────────────────────────────────────────────────────────
+
+security = HTTPBearer()
+
+def require_admin_key(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    """Verify admin API key for protected endpoints."""
+    admin_key = os.getenv('ADMIN_API_KEY')
+    if not admin_key:
+        # If no admin key is set, allow all requests (backward compatible)
+        return True
+    if not secrets.compare_digest(credentials.credentials, admin_key):
+        raise HTTPException(status_code=401, detail="Invalid API key")
+    return True
 
 # ──────────────────────────────────────────────────────────────────────
 # Global state
@@ -202,7 +221,7 @@ async def get_daily_stats():
     return state.daily_stats
 
 @app.post("/api/start")
-async def start_trading():
+async def start_trading(_=Depends(require_admin_key)):
     """Start the trading system."""
     if state.status == TradingStatus.RUNNING:
         return {"status": "already_running"}
@@ -218,14 +237,14 @@ async def start_trading():
     return {"status": "started", "mode": state.mode}
 
 @app.post("/api/stop")
-async def stop_trading():
+async def stop_trading(_=Depends(require_admin_key)):
     """Stop the trading system."""
     state.status = TradingStatus.STOPPED
     state.notifier.send("**Trading Stopped**")
     return {"status": "stopped"}
 
 @app.post("/api/close-all")
-async def close_all():
+async def close_all(_=Depends(require_admin_key)):
     """Close all positions."""
     state.trader.close_all_positions()
     state.active_positions.clear()
@@ -233,7 +252,7 @@ async def close_all():
     return {"status": "closed"}
 
 @app.post("/api/cancel-all")
-async def cancel_all():
+async def cancel_all(_=Depends(require_admin_key)):
     """Cancel all orders."""
     state.trader.cancel_all_orders()
     return {"status": "cancelled"}
