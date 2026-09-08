@@ -92,13 +92,19 @@ class TradingState:
     
     def get_portfolio_value(self) -> float:
         """Get current portfolio value."""
-        account = self.trader.get_account()
-        return account['equity'] if account else 0.0
+        try:
+            account = self.trader.get_account()
+            return account['equity'] if account else 0.0
+        except Exception:
+            return 0.0
     
     def get_buying_power(self) -> float:
         """Get buying power."""
-        account = self.trader.get_account()
-        return account['buying_power'] if account else 0.0
+        try:
+            account = self.trader.get_account()
+            return account['buying_power'] if account else 0.0
+        except Exception:
+            return 0.0
 
 state = TradingState()
 

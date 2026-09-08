@@ -5,21 +5,20 @@ Fetches real prices and executes real trades via Alpaca API.
 """
 import os
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional, Dict, List
 
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import (
-    MarketOrderRequest, LimitOrderRequest, StopLimitOrderRequest,
+    MarketOrderRequest, LimitOrderRequest,
     TakeProfitRequest, StopLossRequest, BracketOrderRequest,
-    GetOrdersRequest, CancelOrderRequest
+    GetOrdersRequest
 )
 from alpaca.trading.enums import (
     OrderSide, TimeInForce, OrderType, QueryOrderStatus,
-    OrderClass
 )
 from alpaca.data.historical import StockHistoricalDataClient
-from alpaca.data.requests import StockLatestQuoteRequest, StockBarsRequest, StockLatestTradeRequest
+from alpaca.data.requests import StockLatestQuoteRequest, StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
 
 from config import config
@@ -36,11 +35,27 @@ class AlpacaTrader:
         self.secret_key = os.getenv('ALPACA_SECRET_KEY')
         self.paper = os.getenv('PAPER_TRADING', 'true').lower() == 'true'
         
-        self.trading_client = TradingClient(self.api_key, self.secret_key, paper=self.paper)
-        self.data_client = StockHistoricalDataClient(self.api_key, self.secret_key)
+        self.trading_client = None
+        self.data_client = None
+        self._initialized = False
+    
+    def _ensure_initialized(self):
+        """Lazy initialization of Alpaca clients."""
+        if self._initialized:
+            return
+        self._initialized = True
+        try:
+            self.trading_client = TradingClient(self.api_key, self.secret_key, paper=self.paper)
+            self.data_client = StockHistoricalDataClient(self.api_key, self.secret_key)
+            logger.info(f"Alpaca client initialized (paper={self.paper})")
+        except Exception as e:
+            logger.error(f"Alpaca client init failed: {e}")
     
     def get_account(self) -> Optional[dict]:
         """Get account details."""
+        self._ensure_initialized()
+        if not self.trading_client:
+            return None
         try:
             account = self.trading_client.get_account()
             return {
@@ -59,6 +74,9 @@ class AlpacaTrader:
     
     def get_positions(self) -> List[dict]:
         """Get all open positions."""
+        self._ensure_initialized()
+        if not self.trading_client:
+            return []
         try:
             positions = self.trading_client.get_all_positions()
             return [{
@@ -77,6 +95,9 @@ class AlpacaTrader:
     
     def get_position(self, symbol: str) -> Optional[dict]:
         """Get position for a specific symbol."""
+        self._ensure_initialized()
+        if not self.trading_client:
+            return None
         try:
             p = self.trading_client.get_open_position(symbol)
             return {
@@ -95,6 +116,9 @@ class AlpacaTrader:
     
     def get_latest_price(self, symbol: str) -> Optional[float]:
         """Get latest mid-price."""
+        self._ensure_initialized()
+        if not self.data_client:
+            return None
         try:
             request = StockLatestQuoteRequest(symbol_or_symbols=[symbol])
             quotes = self.data_client.get_stock_latest_quote(request)
@@ -104,8 +128,11 @@ class AlpacaTrader:
             logger.error(f"Price fetch failed for {symbol}: {e}")
             return None
     
-    def get_bars(self, symbol: str, days: int = 5) -> Optional[dict]:
+    def get_bars(self, symbol: str, days: int = 5):
         """Get recent price bars."""
+        self._ensure_initialized()
+        if not self.data_client:
+            return None
         try:
             end = datetime.now()
             start = end - timedelta(days=days + 5)
@@ -134,6 +161,9 @@ class AlpacaTrader:
         time_in_force: TimeInForce = TimeInForce.DAY
     ) -> Optional[dict]:
         """Submit a market order."""
+        self._ensure_initialized()
+        if not self.trading_client:
+            return None
         try:
             order_side = OrderSide.BUY if side == SignalSide.BUY else OrderSide.SELL
             order = self.trading_client.submit_order(MarketOrderRequest(
@@ -165,10 +195,12 @@ class AlpacaTrader:
         target_price: float,
     ) -> Optional[dict]:
         """Submit a bracket order (entry + stop loss + take profit)."""
+        self._ensure_initialized()
+        if not self.trading_client:
+            return None
         try:
             order_side = OrderSide.BUY if side == SignalSide.BUY else OrderSide.SELL
             
-            # For bracket orders, we need to use the bracket order request
             order = self.trading_client.submit_order(BracketOrderRequest(
                 symbol=symbol,
                 qty=qty,
@@ -193,6 +225,9 @@ class AlpacaTrader:
     
     def close_position(self, symbol: str) -> Optional[dict]:
         """Close a position."""
+        self._ensure_initialized()
+        if not self.trading_client:
+            return None
         try:
             order = self.trading_client.close_position(symbol)
             logger.info(f"Position closed: {symbol}")
@@ -209,6 +244,9 @@ class AlpacaTrader:
     
     def close_all_positions(self):
         """Close all positions."""
+        self._ensure_initialized()
+        if not self.trading_client:
+            return
         try:
             self.trading_client.close_all_positions()
             logger.info("All positions closed")
@@ -217,6 +255,9 @@ class AlpacaTrader:
     
     def cancel_all_orders(self):
         """Cancel all open orders."""
+        self._ensure_initialized()
+        if not self.trading_client:
+            return
         try:
             self.trading_client.cancel_orders()
             logger.info("All orders cancelled")
@@ -225,6 +266,9 @@ class AlpacaTrader:
     
     def get_orders(self, status: str = "open") -> List[dict]:
         """Get orders by status."""
+        self._ensure_initialized()
+        if not self.trading_client:
+            return []
         try:
             if status == "open":
                 request = GetOrdersRequest(status=QueryOrderStatus.OPEN)
@@ -254,6 +298,9 @@ class AlpacaTrader:
     
     def is_market_open(self) -> bool:
         """Check if the market is open."""
+        self._ensure_initialized()
+        if not self.trading_client:
+            return False
         try:
             clock = self.trading_client.get_clock()
             return clock.is_open
@@ -263,13 +310,16 @@ class AlpacaTrader:
     
     def get_clock(self) -> Optional[dict]:
         """Get market clock."""
+        self._ensure_initialized()
+        if not self.trading_client:
+            return None
         try:
             clock = self.trading_client.get_clock()
             return {
                 'is_open': clock.is_open,
-                'next_open': clock.next_open,
-                'next_close': clock.next_close,
-                'timestamp': clock.timestamp,
+                'next_open': str(clock.next_open),
+                'next_close': str(clock.next_close),
+                'timestamp': str(clock.timestamp),
             }
         except Exception as e:
             logger.error(f"Clock fetch failed: {e}")
