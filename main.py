@@ -394,9 +394,34 @@ def scan_for_setups() -> List[dict]:
     setups.sort(key=lambda x: x['score'], reverse=True)
     return setups
 
+async def sync_positions_on_startup():
+    """Sync with Alpaca on startup to recover open positions after restart."""
+    try:
+        positions = state.trader.get_positions()
+        if positions:
+            logger.info(f"Found {len(positions)} open position(s) on startup")
+            for p in positions:
+                symbol = p['symbol']
+                state.active_positions[symbol] = {
+                    'side': p['side'],
+                    'entry': p['entry_price'],
+                    'stop': 0.0,  # Would need to fetch from orders
+                    'target': 0.0,
+                    'size': p['qty'],
+                }
+                logger.info(f"  Synced: {symbol} {p['side']} x{p['qty']} @ ${p['entry_price']}")
+        else:
+            logger.info("No open positions on startup")
+    except Exception as e:
+        logger.error(f"Position sync failed: {e}")
+
+
 async def _trading_loop_inner():
     """Main trading loop (inner)."""
     logger.info("Trading loop started")
+    
+    # Sync positions on startup
+    await sync_positions_on_startup()
     
     while state.status == TradingStatus.RUNNING:
         try:
