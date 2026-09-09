@@ -55,23 +55,42 @@ async def keep_alive_ping():
 
 async def watchdog():
     """Monitors trading loop and restarts if it dies."""
+    logger.info("Watchdog started")
+    restart_count = 0
+    
     while True:
-        await asyncio.sleep(30)  # Check every 30 seconds
+        await asyncio.sleep(15)  # Check every 15 seconds (more aggressive)
         
         if state.status == TradingStatus.RUNNING:
-            # Check if trading loop task is alive
-            if hasattr(state, '_trading_task') and state._trading_task:
-                if state._trading_task.done():
-                    # Task died - restart it
-                    try:
-                        exc = state._trading_task.exception()
-                        if exc:
-                            logger.error(f"Trading loop crashed: {exc}")
-                    except:
-                        logger.error("Trading loop died (unknown error)")
-                    
-                    logger.warning("Restarting trading loop...")
-                    state._trading_task = asyncio.create_task(_trading_loop_inner())
+            # Check if trading loop task exists and is alive
+            if not hasattr(state, '_trading_task') or state._trading_task is None:
+                logger.warning("No trading task found, restarting...")
+                state._trading_task = asyncio.create_task(_trading_loop_inner())
+                restart_count += 1
+                continue
+                
+            if state._trading_task.done():
+                # Task died - get the error
+                try:
+                    exc = state._trading_task.exception()
+                    if exc:
+                        restart_count += 1
+                        logger.error(f"Trading loop crashed ({restart_count} restarts): {exc}")
+                except:
+                    restart_count += 1
+                    logger.error(f"Trading loop died ({restart_count} restarts, unknown error)")
+                
+                logger.warning("Restarting trading loop...")
+                state._trading_task = asyncio.create_task(_trading_loop_inner())
+                
+                # If too many restarts, slow down
+                if restart_count > 10:
+                    logger.critical("Too many restarts, waiting 60 seconds...")
+                    await asyncio.sleep(60)
+                    restart_count = 0
+            else:
+                # Reset counter when loop is healthy
+                restart_count = 0
 
 # ──────────────────────────────────────────────────────────────────────
 # Authentication
@@ -417,17 +436,22 @@ async def sync_positions_on_startup():
 
 
 async def _trading_loop_inner():
-    """Main trading loop (inner)."""
+    """Main trading loop (inner) - designed to never die."""
     logger.info("Trading loop started")
     
     # Sync positions on startup
     await sync_positions_on_startup()
     
+    # Main loop - catches ALL exceptions to prevent death
     while state.status == TradingStatus.RUNNING:
         try:
             now = datetime.now()
             state.reset_daily(now.date())
             current_time = now.time()
+            
+            # Log heartbeat every 5 minutes
+            if now.minute % 5 == 0 and now.second < 30:
+                logger.info(f"Heartbeat: {now.strftime('%H:%M')} | Positions: {len(state.active_positions)} | PnL: ${state.daily_pnl:+.2f}")
             
             # Check if market is open
             try:
@@ -441,7 +465,6 @@ async def _trading_loop_inner():
             
             # === PRE-MARKET: Track range ===
             if dtime(4, 0) <= current_time < dtime(9, 30):
-                # Scan for setups once per hour
                 if now.minute < 5:
                     try:
                         state.todays_setups = scan_for_setups()
@@ -454,7 +477,6 @@ async def _trading_loop_inner():
             
             # === OPENING RANGE: Build OR ===
             if dtime(9, 30) <= current_time < dtime(9, 45):
-                # Track opening range
                 try:
                     for symbol in config.universe:
                         price = state.trader.get_latest_price(symbol)
@@ -472,7 +494,6 @@ async def _trading_loop_inner():
             
             # === TRADING HOURS: Execute ===
             if dtime(9, 45) <= current_time < config.trading_end:
-                # Check daily limits
                 if state.trades_today >= config.max_trades_per_day:
                     await asyncio.sleep(60)
                     continue
@@ -483,12 +504,10 @@ async def _trading_loop_inner():
                     await asyncio.sleep(60)
                     continue
                 
-                # Execute setups
                 if state.todays_setups and not state.active_positions:
                     for setup in state.todays_setups[:3]:
                         try:
                             symbol = setup['symbol']
-                            
                             if state.trader.get_position(symbol):
                                 continue
                             
@@ -527,7 +546,6 @@ async def _trading_loop_inner():
                                     'target': target,
                                     'size': size,
                                 }
-                                
                                 state.notifier.send_trade_alert({
                                     'symbol': symbol,
                                     'direction': direction.upper(),
@@ -554,9 +572,12 @@ async def _trading_loop_inner():
             
             await asyncio.sleep(30)
             
+        except asyncio.CancelledError:
+            logger.info("Trading loop cancelled")
+            break
         except Exception as e:
-            logger.error(f"Trading loop error: {e}")
-            await asyncio.sleep(60)
+            logger.error(f"Trading loop error: {e}", exc_info=True)
+            await asyncio.sleep(30)  # Wait before retrying
     
     logger.info("Trading loop stopped")
 
