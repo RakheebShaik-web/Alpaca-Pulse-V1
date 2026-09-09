@@ -154,6 +154,33 @@ class AlpacaTrader:
             logger.error(f"Bars fetch failed for {symbol}: {e}")
             return None
     
+    def get_atr(self, symbol: str, period: int = 14) -> Optional[float]:
+        """Get the Average True Range."""
+        self._ensure_initialized()
+        if not self.data_client:
+            return None
+        try:
+            bars = self.get_bars(symbol, days=5)
+            if bars is None or len(bars) < period:
+                return None
+            
+            high = bars['high']
+            low = bars['low']
+            prev_close = bars['close'].shift(1)
+            
+            import pandas as pd
+            tr = pd.concat([
+                high - low,
+                (high - prev_close).abs(),
+                (low - prev_close).abs()
+            ], axis=1).max(axis=1)
+            
+            atr = tr.rolling(window=period).mean().iloc[-1]
+            return round(atr, 2)
+        except Exception as e:
+            logger.error(f"Failed to get ATR for {symbol}: {e}")
+            return None
+    
     def submit_market_order(
         self,
         symbol: str,

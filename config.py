@@ -16,6 +16,9 @@ class StrategyConfig:
     max_trades_per_day: int = 3
     max_daily_loss: float = 200
     target_daily_pnl: float = 150
+    max_position_pct: float = 0.10        # Max 10% of capital per position
+    max_correlated_trades: int = 2        # Max 2 tech/correlated names
+    use_atr_sizing: bool = True          # Use ATR for position sizing
 
     # ─── Entry Criteria ──────────────────────────────────────────
     gap_threshold: float = 0.003        # 0.3% gap (realistic for liquid stocks)

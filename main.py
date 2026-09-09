@@ -22,8 +22,9 @@ import aiohttp
 from config import config
 from alpaca_trader import AlpacaTrader
 from discord_notifier import DiscordNotifier
+from state_store import BotState, TradePosition, load_state, save_state, new_position
 from models import (
-    TradingStatus, SystemStatus, Position, TradeRecord,
+    TradingStatus, SystemStatus, Position as ApiPosition, TradeRecord,
     DailyStats, TradeSignal, FillResult, ScanResult
 )
 
@@ -171,6 +172,7 @@ class TradingState:
             self.pm_low = None
             self.pm_open = None
             self.prev_close = None
+            self._previous_closes = {}
             self.todays_setups = []
     
     def get_portfolio_value(self) -> float:
@@ -540,15 +542,16 @@ async def _trading_loop_inner():
             # === OPENING RANGE: Build OR ===
             if dtime(9, 30) <= current_time < dtime(9, 45):
                 try:
+                    # Reset OR at start of each day
+                    if state.or_high is None:
+                        state.or_high = 0.0
+                        state.or_low = float('inf')
+                    
                     for symbol in config.universe:
                         price = state.trader.get_latest_price(symbol)
                         if price:
-                            if state.or_high is None:
-                                state.or_high = price
-                                state.or_low = price
-                            else:
-                                state.or_high = max(state.or_high, price)
-                                state.or_low = min(state.or_low, price)
+                            state.or_high = max(state.or_high, price)
+                            state.or_low = min(state.or_low, price)
                 except Exception as e:
                     logger.error(f"OR tracking error: {e}")
                 await asyncio.sleep(30)
@@ -578,18 +581,32 @@ async def _trading_loop_inner():
                                 continue
                             
                             direction = setup['direction']
+                            
+                            # Institutional: Use ATR for stop distance if enabled
+                            if config.use_atr_sizing:
+                                atr = state.trader.get_atr(symbol)
+                                if atr and atr > 0:
+                                    stop_distance = atr * 1.5
+                                else:
+                                    stop_distance = price * 0.005
+                            else:
+                                stop_distance = price * 0.005
+                            
                             if direction == 'long':
                                 entry = price
-                                stop = entry * 0.995
-                                risk = entry - stop
+                                stop = entry - stop_distance
+                                risk = stop_distance
                                 target = entry + (risk * config.rr_ratio)
                             else:
                                 entry = price
-                                stop = entry * 1.005
-                                risk = stop - entry
+                                stop = entry + stop_distance
+                                risk = stop_distance
                                 target = entry - (risk * config.rr_ratio)
                             
+                            # Institutional: Position size with max capital limit
                             size = max(1, int(config.risk_per_trade / risk))
+                            max_size = int(config.capital * config.max_position_pct / price)
+                            size = min(size, max_size)
                             
                             result = state.trader.submit_bracket_order(
                                 symbol=symbol,
