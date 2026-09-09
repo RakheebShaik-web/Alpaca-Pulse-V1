@@ -134,6 +134,7 @@ class TradingState:
         self.pm_low = None
         self.pm_open = None
         self.prev_close = None
+        self._previous_closes: Dict[str, float] = {}
         self.todays_setups: List[dict] = []
     
     @property
@@ -393,14 +394,14 @@ def scan_for_setups() -> List[dict]:
             if bars is None or bars.empty:
                 continue
             
-            # Get previous close (from yesterday's last bar)
-            prev_close = state.prev_close
-            
             # Pre-market metrics
             pm_high = bars['high'].max()
             pm_low = bars['low'].min()
             pm_volume = int(bars['volume'].sum())
             pm_open = float(bars['open'].iloc[0])
+            
+            # Get previous close from our cached dict
+            prev_close = state._previous_closes.get(symbol)
             
             if prev_close and prev_close > 0:
                 gap_pct = (pm_open - prev_close) / prev_close
@@ -474,9 +475,28 @@ async def sync_positions_on_startup():
         logger.error(f"Position sync failed: {e}")
 
 
+async def fetch_previous_closes():
+    """Fetch previous day's close prices for all symbols in universe."""
+    logger.info("Fetching previous closes...")
+    for symbol in config.universe:
+        try:
+            bars = state.trader.get_bars(symbol, days=2)
+            if bars is not None and not bars.empty:
+                # Get the last daily close (yesterday)
+                prev_close = float(bars['close'].iloc[-1])
+                state._previous_closes[symbol] = prev_close
+                logger.debug(f"  {symbol}: ${prev_close:.2f}")
+        except Exception as e:
+            logger.warning(f"  Failed to get previous close for {symbol}: {e}")
+    logger.info(f"Fetched {len(state._previous_closes)} previous closes")
+
+
 async def _trading_loop_inner():
     """Main trading loop (inner) - designed to never die."""
     logger.info("Trading loop started")
+    
+    # Fetch previous closes before scanning
+    await fetch_previous_closes()
     
     # Sync positions on startup
     await sync_positions_on_startup()
@@ -504,7 +524,10 @@ async def _trading_loop_inner():
             
             # === PRE-MARKET: Track range ===
             if dtime(4, 0) <= current_time < dtime(9, 30):
+                # Scan for setups once per hour
                 if now.minute < 5:
+                    # Refresh previous closes for fresh data
+                    await fetch_previous_closes()
                     try:
                         state.todays_setups = scan_for_setups()
                         if state.todays_setups:
@@ -606,6 +629,9 @@ async def _trading_loop_inner():
                 if state.active_positions:
                     state.trader.close_all_positions()
                     state.active_positions.clear()
+                # Fetch closes for next morning's scan
+                if now.minute < 5:
+                    await fetch_previous_closes()
                 await asyncio.sleep(60)
                 continue
             
