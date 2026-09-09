@@ -205,6 +205,14 @@ async def lifespan(app: FastAPI):
     # Start watchdog (restarts trading loop if it dies)
     watchdog_task = asyncio.create_task(watchdog())
     
+    # Auto-start trading loop on boot
+    if os.getenv('AUTO_START_TRADING', 'true').lower() == 'true':
+        state.status = TradingStatus.RUNNING
+        state.mode = "paper" if state.trader.paper else "live"
+        state.start_time = datetime.utcnow()
+        state._trading_task = asyncio.create_task(_trading_loop_inner())
+        logger.info("Auto-started trading loop")
+    
     yield
     
     keep_alive_task.cancel()
@@ -307,7 +315,11 @@ async def get_account():
 async def start_trading(_=Depends(require_admin_key)):
     """Start the trading system (admin only)."""
     if state.status == TradingStatus.RUNNING:
-        return {"status": "already_running"}
+        # Check if loop is actually alive
+        if hasattr(state, '_trading_task') and state._trading_task and not state._trading_task.done():
+            return {"status": "already_running"}
+        # Loop died, restart it
+        logger.warning("Loop was marked RUNNING but task is dead, restarting...")
     
     state.status = TradingStatus.RUNNING
     state.mode = "paper" if state.trader.paper else "live"
