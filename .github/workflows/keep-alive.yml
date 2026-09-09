@@ -1,0 +1,21 @@
+name: Keep Render Alive
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'  # Every 5 minutes
+  workflow_dispatch:  # Allow manual trigger
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Render service
+        run: |
+          echo "Pinging service..."
+          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" https://alpaca-pulse-v1.onrender.com/)
+          echo "HTTP Status: $HTTP_STATUS"
+          if [ "$HTTP_STATUS" -eq 200 ]; then
+            echo "✅ Service is alive"
+          else
+            echo "⚠️ Service returned $HTTP_STATUS"
+          fi
