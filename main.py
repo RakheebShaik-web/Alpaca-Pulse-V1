@@ -436,11 +436,38 @@ async def sync_positions_on_startup():
                 state.active_positions[symbol] = {
                     'side': p['side'],
                     'entry': p['entry_price'],
-                    'stop': 0.0,  # Would need to fetch from orders
+                    'stop': 0.0,
                     'target': 0.0,
                     'size': p['qty'],
                 }
                 logger.info(f"  Synced: {symbol} {p['side']} x{p['qty']} @ ${p['entry_price']}")
+            
+            # Fetch open orders to recover stops/targets
+            try:
+                open_orders = state.trader.get_orders(status="open")
+                for order in open_orders:
+                    symbol = order.get('symbol', '')
+                    if symbol in state.active_positions:
+                        order_type = order.get('type', '')
+                        if order_type == 'stop_loss' or 'stop' in order.get('type', ''):
+                            state.active_positions[symbol]['stop'] = order.get('stop_price', 0.0)
+                            logger.info(f"  Recovered stop for {symbol}: ${order.get('stop_price', 0.0)}")
+                        elif order_type == 'limit' or order.get('limit_price'):
+                            state.active_positions[symbol]['target'] = order.get('limit_price', 0.0)
+                            logger.info(f"  Recovered target for {symbol}: ${order.get('limit_price', 0.0)}")
+            except Exception as e:
+                logger.warning(f"Could not fetch open orders: {e}")
+            # If stops/targets not recovered, reconstruct from entry
+            for symbol, pos in state.active_positions.items():
+                if pos['stop'] == 0.0 and pos['target'] == 0.0:
+                    entry = pos['entry']
+                    if pos['side'] == 'long':
+                        pos['stop'] = round(entry * 0.995, 2)
+                        pos['target'] = round(entry + (entry * 0.005 * config.rr_ratio), 2)
+                    else:
+                        pos['stop'] = round(entry * 1.005, 2)
+                        pos['target'] = round(entry - (entry * 0.005 * config.rr_ratio), 2)
+                    logger.info(f"  Reconstructed stop/target for {symbol}: Stop=${pos['stop']} Target=${pos['target']}")
         else:
             logger.info("No open positions on startup")
     except Exception as e:
