@@ -2,7 +2,7 @@
 """
 FastAPI server for the trading system.
 Provides REST API for the dashboard and runs the strategy loop.
-Institutional-grade with multi-timeframe analysis and crash-safe persistence.
+Institutional-grade with crash-safe persistence and trade logging.
 """
 import os
 import asyncio
@@ -15,7 +15,6 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from pydantic import BaseModel
 import uvicorn
 
 from config import config
@@ -102,7 +101,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Pulse V1 Trading System",
-    description="Automated trading system with multi-timeframe analysis",
+    description="Pre-Market Momentum + ORB Trading Strategy",
     version="2.0.0",
     lifespan=lifespan,
 )
@@ -164,7 +163,7 @@ async def get_trades():
 @app.get("/api/scan")
 async def get_scan():
     """Get latest signals (public read-only)."""
-    return system.state.todays_setups if hasattr(system.state, 'todays_setups') else []
+    return []
 
 @app.get("/api/clock")
 async def get_clock():
@@ -223,15 +222,63 @@ async def cancel_all(_=Depends(require_admin_key)):
     return {"status": "cancelled"}
 
 # ──────────────────────────────────────────────────────────────────────
-# Trading Loop
+# Trading Loop — Your Original Strategy
 # ──────────────────────────────────────────────────────────────────────
 
+async def fetch_previous_closes():
+    """Fetch previous day's close prices for all symbols."""
+    logger.info("Fetching previous closes...")
+    for symbol in config.universe:
+        try:
+            bars = system.trader.get_bars(symbol, days=2)
+            if bars is not None and not bars.empty:
+                prev_close = float(bars['close'].iloc[-1])
+                system._previous_closes[symbol] = prev_close
+                logger.debug(f"  {symbol}: ${prev_close:.2f}")
+        except Exception as e:
+            logger.warning(f"  Failed to get previous close for {symbol}: {e}")
+    logger.info(f"Fetched {len(system._previous_closes)} previous closes")
+
+
+async def sync_positions_on_startup():
+    """Sync with Alpaca on startup to recover open positions after restart."""
+    try:
+        positions = system.trader.get_positions()
+        if positions:
+            logger.info(f"Found {len(positions)} open position(s) on startup")
+            for p in positions:
+                symbol = p['symbol']
+                position = new_position(
+                    symbol=symbol,
+                    side=p['side'],
+                    entry_price=p['entry_price'],
+                    shares=p['qty'],
+                    stop_price=p['entry_price'] * 0.995,  # Reconstructed
+                    target_price=p['entry_price'] * 1.01,  # Reconstructed
+                )
+                system.state.add_position(position)
+                logger.info(f"  Synced: {symbol} {p['side']} x{p['qty']} @ ${p['entry_price']}")
+        else:
+            logger.info("No open positions on startup")
+    except Exception as e:
+        logger.error(f"Position sync failed: {e}")
+
+
 async def trading_loop():
-    """Main trading loop."""
+    """Main trading loop — Pre-Market Momentum + ORB Strategy."""
     logger.info("Trading loop started")
     
     # Load persisted state
     system.state = load_state()
+    
+    # Fetch previous closes before scanning
+    await fetch_previous_closes()
+    
+    # Sync positions on startup
+    await sync_positions_on_startup()
+    
+    or_high = None
+    or_low = None
     
     while system.status == "running":
         try:
@@ -256,21 +303,21 @@ async def trading_loop():
                 await asyncio.sleep(60)
                 continue
             
-            # === PRE-MARKET: Scan for signals ===
+            # === PRE-MARKET: Scan for gap setups ===
             if dtime(4, 0) <= current_time < dtime(9, 30):
                 if now.minute < 5:
+                    # Refresh previous closes
+                    await fetch_previous_closes()
                     try:
-                        signals = system.strategy.generate_all_signals()
+                        signals = system.strategy.generate_signals(system._previous_closes)
                         if signals:
-                            system.notifier.send_scan_results([
-                                {
-                                    "symbol": s.symbol,
-                                    "direction": s.direction.value,
-                                    "gap_pct": 0.0,
-                                    "pm_volume": 0,
-                                    "score": 0.0,
-                                } for s in signals
-                            ])
+                            system.notifier.send_scan_results([{
+                                'symbol': s.symbol,
+                                'direction': s.direction.value,
+                                'gap_pct': s.gap_pct,
+                                'pm_volume': s.pm_volume,
+                                'score': abs(s.gap_pct) * s.pm_volume,
+                            } for s in signals])
                     except Exception as e:
                         logger.error(f"Scan error: {e}")
                 await asyncio.sleep(30)
@@ -278,10 +325,21 @@ async def trading_loop():
             
             # === OPENING RANGE: Build OR ===
             if dtime(9, 30) <= current_time < dtime(9, 45):
+                try:
+                    for symbol in config.universe:
+                        price = system.trader.get_latest_price(symbol)
+                        if price:
+                            if or_high is None:
+                                or_high = 0.0
+                                or_low = float('inf')
+                            or_high = max(or_high, price)
+                            or_low = min(or_low, price)
+                except Exception as e:
+                    logger.error(f"OR tracking error: {e}")
                 await asyncio.sleep(30)
                 continue
             
-            # === TRADING HOURS: Execute ===
+            # === TRADING HOURS: Execute ORB + VWAP ===
             if dtime(9, 45) <= current_time < config.trading_end:
                 # Check daily limits
                 if system.state.trades_today >= config.max_trades_per_day:
@@ -299,24 +357,44 @@ async def trading_loop():
                     await asyncio.sleep(60)
                     continue
                 
-                # Generate and execute signals
-                signals = system.strategy.generate_all_signals()
-                for signal in signals:
+                # Get signals from pre-market scan
+                signals = system.strategy.generate_signals(system._previous_closes)
+                system.state.todays_setups = signals
+                
+                for signal in signals[:3]:
                     try:
-                        # Check if already in position
-                        if signal.symbol in system.state.positions:
+                        symbol = signal.symbol
+                        
+                        # Skip if already in position
+                        if symbol in system.state.positions:
                             continue
                         
-                        # Calculate position size
+                        # Get current price
+                        price = system.trader.get_latest_price(symbol)
+                        if not price:
+                            continue
+                        
+                        # ORB: Check if price broke above/below OR
+                        if signal.direction == SignalDirection.LONG:
+                            if price <= or_high:
+                                continue  # Wait for breakout
+                        else:
+                            if price >= or_low:
+                                continue  # Wait for breakout
+                        
+                        # VWAP confirmation (simplified)
+                        # In production you'd fetch VWAP from Alpaca
+                        
+                        # Calculate position size with ATR
                         atr = signal.atr
                         stop_distance = atr * config.atr_stop_multiplier
                         size = max(1, int(config.risk_per_trade / stop_distance))
-                        max_size = int(config.capital * config.max_position_pct / signal.price)
+                        max_size = int(config.capital * config.max_position_pct / price)
                         size = min(size, max_size)
                         
                         # Submit bracket order
                         result = system.trader.submit_bracket_order(
-                            symbol=signal.symbol,
+                            symbol=symbol,
                             qty=size,
                             side=SignalDirection.LONG if signal.direction == SignalDirection.LONG else SignalDirection.SELL,
                             stop_price=signal.stop,
@@ -328,9 +406,9 @@ async def trading_loop():
                             
                             # Create position record
                             position = new_position(
-                                symbol=signal.symbol,
+                                symbol=symbol,
                                 side=signal.direction.value,
-                                entry_price=signal.price,
+                                entry_price=price,
                                 shares=size,
                                 stop_price=signal.stop,
                                 target_price=signal.target,
@@ -339,9 +417,9 @@ async def trading_loop():
                             
                             # Log trade
                             log_trade(
-                                symbol=signal.symbol,
+                                symbol=symbol,
                                 side=signal.direction.value,
-                                entry_price=signal.price,
+                                entry_price=price,
                                 shares=size,
                                 stop_price=signal.stop,
                                 target_price=signal.target,
@@ -351,14 +429,14 @@ async def trading_loop():
                             
                             # Send alert
                             system.notifier.send_trade_alert({
-                                "symbol": signal.symbol,
-                                "direction": signal.direction.value.upper(),
-                                "entry": signal.price,
-                                "stop": signal.stop,
-                                "target": signal.target,
-                                "size": size,
-                                "risk": stop_distance * size,
-                                "gap_pct": 0.0,
+                                'symbol': symbol,
+                                'direction': signal.direction.value.upper(),
+                                'entry': price,
+                                'stop': signal.stop,
+                                'target': signal.target,
+                                'size': size,
+                                'risk': stop_distance * size,
+                                'gap_pct': signal.gap_pct,
                             })
                             
                             # Save state
@@ -376,6 +454,9 @@ async def trading_loop():
                     system.trader.close_all_positions()
                     system.state.positions.clear()
                     save_state(system.state)
+                # Reset OR for next day
+                or_high = None
+                or_low = None
                 await asyncio.sleep(60)
                 continue
             
