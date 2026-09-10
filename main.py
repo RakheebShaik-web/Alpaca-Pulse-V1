@@ -276,7 +276,14 @@ async def trading_loop():
             # === GENERATE SIGNALS ===
             signals = system.strategy.generate_all_signals()
             
-            for signal in signals[:3]:
+            # Limit to 3 total positions (including existing)
+            open_count = len(system.state.all_positions())
+            if open_count >= 3:
+                await asyncio.sleep(30)
+                continue
+            
+            max_new = 3 - open_count
+            for signal in signals[:max_new]:
                 try:
                     symbol = signal.symbol
                     
@@ -284,11 +291,20 @@ async def trading_loop():
                     if symbol in system.state.positions:
                         continue
                     
-                    # Calculate position size
+                    # Calculate position size — exactly $50 risk per trade
                     stop_distance = abs(signal.price - signal.stop)
+                    if stop_distance <= 0:
+                        continue
                     size = max(1, int(config.risk_per_trade / stop_distance))
+                    
+                    # Cap at max position percentage
                     max_size = int(config.capital * config.max_position_pct / signal.price)
                     size = min(size, max_size)
+                    
+                    # Verify risk is close to $50
+                    actual_risk = stop_distance * size
+                    if actual_risk > config.risk_per_trade * 1.2:  # Allow 20% overshoot
+                        size = max(1, int(config.risk_per_trade / stop_distance))
                     
                     # Submit bracket order
                     result = system.trader.submit_bracket_order(
