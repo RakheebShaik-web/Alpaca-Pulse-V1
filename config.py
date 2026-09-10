@@ -24,22 +24,47 @@ class StrategyConfig:
     
     # ─── VWAP Parameters ─────────────────────────────────────────
     vwap_std_dev_multiplier: float = 1.5
-    vwap_lookback_minutes: int = 390  # Full trading day
+    vwap_lookback_minutes: int = 390
     
     # ─── Opening Range ───────────────────────────────────────────
-    or_narrow_threshold: float = 0.3   # < 0.3% = narrow (high edge)
-    or_wide_threshold: float = 1.0     # > 1.0% = wide (no trade)
+    or_narrow_threshold: float = 0.3
+    or_wide_threshold: float = 1.0
     
     # ─── Volume Filter ───────────────────────────────────────────
     volume_ma_length: int = 20
-    min_volume_mult: float = 1.5       # Volume must be > 1.5x average
+    min_volume_mult: float = 1.0
     
     # ─── ATR Parameters ──────────────────────────────────────────
     atr_length: int = 14
     atr_stop_multiplier: float = 1.5
+    trailing_stop_multiplier: float = 2.0  # Trailing stop distance
+    trailing_stop_activation: float = 1.0  # Activate after 1R profit
     
     # ─── Multi-Factor Scoring ────────────────────────────────────
-    min_score_to_trade: int = 4        # Out of 8 max (lowered from 6 for more trades)
+    min_score_to_trade: int = 4
+    
+    # ─── Volatility Targeting ────────────────────────────────────
+    target_volatility: float = 0.15  # 15% annualized vol target
+    vol_lookback_days: int = 20
+    
+    # ─── Market Regime Filter ────────────────────────────────────
+    regime_filter: bool = True
+    adx_trend_threshold: float = 25.0  # ADX > 25 = trending
+    
+    # ─── Max Drawdown Halt ───────────────────────────────────────
+    max_drawdown_pct: float = 5.0  # Halt if account drops 5%
+    
+    # ─── Profit Lock ─────────────────────────────────────────────
+    profit_lock_enabled: bool = True
+    profit_lock_target: float = 150.0  # Lock profits at $150
+    
+    # ─── Trailing Stops ──────────────────────────────────────────
+    trailing_stop_enabled: bool = True
+    breakeven_activation: float = 1.0  # Move to BE after 1R
+    
+    # ─── Sector Exposure ─────────────────────────────────────────
+    max_sector_exposure: float = 0.30  # Max 30% in one sector
+    tech_symbols: Tuple[str, ...] = ('AAPL', 'MSFT', 'GOOGL', 'META', 'NVDA', 'AMD', 'TSLA')
     
     # ─── Timing ──────────────────────────────────────────────────
     trading_start: time = time(9, 30)

@@ -24,7 +24,7 @@ class DataFeed:
         self.trader = trader
     
     def get_bars_yfinance(self, symbol: str, days: int = 5) -> Optional[pd.DataFrame]:
-        """Fetch recent price bars using yfinance (bypasses Alpaca SIP limits)."""
+        """Fetch recent price bars using yfinance."""
         try:
             end = datetime.now()
             start = end - timedelta(days=days + 3)
@@ -50,8 +50,8 @@ class DataFeed:
             logger.error(f"Failed to get bars for {symbol}: {e}")
             return None
     
-    def get_latest_price_yfinance(self, symbol: str) -> Optional[float]:
-        """Get latest trade price using yfinance."""
+    def get_latest_price(self, symbol: str) -> Optional[float]:
+        """Get latest price using yfinance."""
         try:
             ticker = yf.Ticker(symbol)
             data = ticker.history(period="1d", interval="1m")
@@ -61,10 +61,6 @@ class DataFeed:
         except Exception as e:
             logger.error(f"Failed to get price for {symbol}: {e}")
             return None
-    
-    def get_latest_price(self, symbol: str) -> Optional[float]:
-        """Get latest price (uses yfinance)."""
-        return self.get_latest_price_yfinance(symbol)
     
     def get_atr(self, symbol: str, period: int = 14) -> Optional[float]:
         """Calculate Average True Range."""
@@ -87,6 +83,41 @@ class DataFeed:
             return round(atr, 2)
         except Exception as e:
             logger.error(f"Failed to get ATR for {symbol}: {e}")
+            return None
+    
+    def get_adx(self, symbol: str, period: int = 14) -> Optional[float]:
+        """Calculate Average Directional Index for trend strength."""
+        try:
+            bars = self.get_bars_yfinance(symbol, days=5)
+            if bars is None or len(bars) < period + 1:
+                return None
+            
+            high = bars['High']
+            low = bars['Low']
+            close = bars['Close']
+            
+            plus_dm = high.diff()
+            minus_dm = -low.diff()
+            
+            plus_dm[plus_dm < 0] = 0
+            minus_dm[minus_dm < 0] = 0
+            
+            tr = pd.concat([
+                high - low,
+                (high - close.shift(1)).abs(),
+                (low - close.shift(1)).abs()
+            ], axis=1).max(axis=1)
+            
+            atr = tr.rolling(window=period).mean()
+            plus_di = 100 * (plus_dm.rolling(window=period).mean() / atr)
+            minus_di = 100 * (minus_dm.rolling(window=period).mean() / atr)
+            
+            dx = 100 * ((plus_di - minus_di).abs() / (plus_di + minus_di))
+            adx = dx.rolling(window=period).mean().iloc[-1]
+            
+            return round(adx, 2) if not np.isnan(adx) else None
+        except Exception as e:
+            logger.error(f"Failed to get ADX for {symbol}: {e}")
             return None
     
     def get_volume_ma(self, symbol: str, period: int = 20) -> Optional[float]:
@@ -192,8 +223,8 @@ class DataFeed:
                 'low': or_low,
                 'range': or_range,
                 'range_pct': or_range_pct,
-                'is_narrow': or_range_pct < 0.3,
-                'is_wide': or_range_pct > 1.0,
+                'is_narrow': or_range_pct < config.or_narrow_threshold,
+                'is_wide': or_range_pct > config.or_wide_threshold,
             }
         except Exception as e:
             logger.error(f"OR calc failed for {symbol}: {e}")
@@ -215,4 +246,16 @@ class DataFeed:
             return round(current_volume / volume_ma, 2)
         except Exception as e:
             logger.error(f"Volume ratio failed for {symbol}: {e}")
+            return None
+    
+    def get_historical_bars(self, symbol: str, days: int = 30) -> Optional[pd.DataFrame]:
+        """Get historical daily bars for volatility calculations."""
+        try:
+            ticker = yf.Ticker(symbol)
+            df = ticker.history(period=f"{days}d", interval="1d")
+            if df.empty:
+                return None
+            return df
+        except Exception as e:
+            logger.error(f"Failed to get historical bars for {symbol}: {e}")
             return None

@@ -21,7 +21,7 @@ from alpaca_trader import AlpacaTrader
 from discord_notifier import DiscordNotifier
 from state_store import BotState, TradePosition, load_state, save_state, new_position
 from data_feed import DataFeed
-from institutional_strategy import InstitutionalStrategy, Signal, SignalDirection
+from institutional_strategy import InstitutionalStrategy, Signal, SignalDirection, Position
 from csv_log import log_trade, get_trade_summary
 
 logging.basicConfig(
@@ -146,6 +146,10 @@ async def get_positions():
 
 @app.get("/api/trades")
 async def get_trades():
+    return get_trade_summary()
+
+@app.get("/api/daily")
+async def get_daily_stats():
     return get_trade_summary()
 
 @app.get("/api/scan")
@@ -273,11 +277,80 @@ async def trading_loop():
                 await asyncio.sleep(60)
                 continue
             
+            # === CHECK MAX DRAWDOWN ===
+            current_equity = system.get_portfolio_value()
+            if system.strategy.check_max_drawdown(current_equity):
+                logger.critical("Max drawdown exceeded! Halting trading.")
+                system.notifier.send("**TRADING HALTED** — Max drawdown exceeded")
+                await asyncio.sleep(300)
+                continue
+            
+            # === UPDATE POSITIONS (trailing stops, exits) ===
+            for symbol in list(system.strategy.positions.keys()):
+                try:
+                    price = system.data_feed.get_latest_price(symbol)
+                    if not price:
+                        continue
+                    
+                    position = system.strategy.positions[symbol]
+                    atr = system.data_feed.get_atr(symbol, config.atr_length) or (price * 0.005)
+                    
+                    # Update trailing stop
+                    position.update_trailing_stop(price, atr)
+                    
+                    # Check for exit
+                    should_exit, reason = position.should_exit(price)
+                    if should_exit:
+                        # Close on Alpaca
+                        system.trader.close_position(symbol)
+                        
+                        # Calculate PnL
+                        if position.direction == SignalDirection.LONG:
+                            pnl = (price - position.entry_price) * position.shares
+                        else:
+                            pnl = (position.entry_price - price) * position.shares
+                        
+                        # Update state
+                        system.state.daily_pnl += pnl
+                        system.state.consecutive_losses = system.state.consecutive_losses + 1 if pnl < 0 else 0
+                        
+                        # Log to CSV
+                        log_trade(
+                            symbol=symbol,
+                            side=position.direction.value,
+                            entry_price=position.entry_price,
+                            exit_price=price,
+                            shares=position.shares,
+                            stop_price=position.stop,
+                            target_price=position.target,
+                            pnl=pnl,
+                            exit_reason=reason,
+                            status="closed",
+                        )
+                        
+                        # Remove from tracking
+                        system.strategy.close_position(symbol)
+                        save_state(system.state)
+                        
+                        # Notify
+                        system.notifier.send_trade_alert({
+                            'symbol': symbol,
+                            'direction': 'CLOSED',
+                            'entry': position.entry_price,
+                            'exit_price': price,
+                            'pnl': pnl,
+                            'reason': reason,
+                        })
+                        
+                        logger.info(f"Position closed: {symbol} PnL=${pnl:.2f} Reason={reason}")
+                except Exception as e:
+                    logger.error(f"Position update error for {symbol}: {e}")
+            
             # === GENERATE SIGNALS ===
             signals = system.strategy.generate_all_signals()
             
             # Limit to 3 total positions (including existing)
-            open_count = len(system.state.all_positions())
+            open_count = len(system.strategy.positions)
             if open_count >= 3:
                 await asyncio.sleep(30)
                 continue
@@ -288,7 +361,11 @@ async def trading_loop():
                     symbol = signal.symbol
                     
                     # Skip if already in position
-                    if symbol in system.state.positions:
+                    if symbol in system.strategy.positions:
+                        continue
+                    
+                    # Check sector exposure
+                    if not system.strategy.check_sector_exposure(symbol):
                         continue
                     
                     # Calculate position size — exactly $50 risk per trade
@@ -296,15 +373,8 @@ async def trading_loop():
                     if stop_distance <= 0:
                         continue
                     size = max(1, int(config.risk_per_trade / stop_distance))
-                    
-                    # Cap at max position percentage
                     max_size = int(config.capital * config.max_position_pct / signal.price)
                     size = min(size, max_size)
-                    
-                    # Verify risk is close to $50
-                    actual_risk = stop_distance * size
-                    if actual_risk > config.risk_per_trade * 1.2:  # Allow 20% overshoot
-                        size = max(1, int(config.risk_per_trade / stop_distance))
                     
                     # Submit bracket order
                     result = system.trader.submit_bracket_order(
@@ -318,6 +388,17 @@ async def trading_loop():
                     if result:
                         system.state.trades_today += 1
                         
+                        # Add to strategy positions
+                        system.strategy.add_position(
+                            symbol=symbol,
+                            direction=signal.direction,
+                            price=signal.price,
+                            shares=size,
+                            stop=signal.stop,
+                            target=signal.target,
+                        )
+                        
+                        # Create position record
                         position = new_position(
                             symbol=symbol,
                             side=signal.direction.value,
@@ -328,6 +409,7 @@ async def trading_loop():
                         )
                         system.state.add_position(position)
                         
+                        # Log trade
                         log_trade(
                             symbol=symbol,
                             side=signal.direction.value,
@@ -339,6 +421,7 @@ async def trading_loop():
                             notes=f"score={signal.score} pos_id={position.position_id}",
                         )
                         
+                        # Send alert
                         system.notifier.send_trade_alert({
                             'symbol': symbol,
                             'direction': signal.direction.value.upper(),
@@ -350,6 +433,7 @@ async def trading_loop():
                             'gap_pct': signal.vwap_deviation,
                         })
                         
+                        # Save state
                         save_state(system.state)
                         
                 except Exception as e:

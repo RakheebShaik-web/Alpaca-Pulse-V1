@@ -7,9 +7,12 @@ Alpha sources:
 3. Volume confirmation (institutional participation)
 4. Time-of-day execution windows (when institutions are active)
 5. Multi-factor scoring (only high-conviction trades)
+6. ADX trend filter (avoid choppy markets)
+7. Trailing stops (lock in profits)
+8. Breakeven activation (protect capital)
 """
 import logging
-from datetime import datetime, time as dtime
+from datetime import datetime
 from typing import Optional, List, Dict
 from dataclasses import dataclass, field
 from enum import Enum
@@ -40,26 +43,89 @@ class Signal:
     vwap_deviation: float
     or_range_pct: float
     volume_ratio: float
+    adx: Optional[float] = None
     timestamp: datetime = field(default_factory=datetime.utcnow)
+
+
+@dataclass
+class Position:
+    symbol: str
+    direction: SignalDirection
+    entry_price: float
+    shares: float
+    stop: float
+    target: float
+    entry_time: datetime = field(default_factory=datetime.utcnow)
+    highest_profit: float = 0.0
+    trailing_stop: Optional[float] = None
+    breakeven_active: bool = False
+    initial_risk: float = 0.0
+    
+    def update_trailing_stop(self, current_price: float, atr: float):
+        """Update trailing stop based on highest profit."""
+        if self.direction == SignalDirection.LONG:
+            profit = current_price - self.entry_price
+            if profit > self.highest_profit:
+                self.highest_profit = profit
+            # Activate breakeven after 1R profit
+            if profit >= self.initial_risk * 1.0 and not self.breakeven_active:
+                self.breakeven_active = True
+                self.trailing_stop = self.entry_price
+            # Trailing stop: 2x ATR from highest point
+            if self.highest_profit > self.initial_risk:
+                trail_distance = atr * 2.0
+                new_trail = current_price - trail_distance
+                if self.trailing_stop is None or new_trail > self.trailing_stop:
+                    self.trailing_stop = new_trail
+        else:
+            profit = self.entry_price - current_price
+            if profit > self.highest_profit:
+                self.highest_profit = profit
+            if profit >= self.initial_risk * 1.0 and not self.breakeven_active:
+                self.breakeven_active = True
+                self.trailing_stop = self.entry_price
+            if self.highest_profit > self.initial_risk:
+                trail_distance = atr * 2.0
+                new_trail = current_price + trail_distance
+                if self.trailing_stop is None or new_trail < self.trailing_stop:
+                    self.trailing_stop = new_trail
+    
+    def should_exit(self, current_price: float) -> tuple[bool, str]:
+        """Check if position should be exited."""
+        if self.direction == SignalDirection.LONG:
+            if current_price <= self.stop:
+                return True, "stop_loss"
+            if current_price >= self.target:
+                return True, "target"
+            if self.trailing_stop and current_price <= self.trailing_stop and self.breakeven_active:
+                return True, "trailing_stop"
+        else:
+            if current_price >= self.stop:
+                return True, "stop_loss"
+            if current_price <= self.target:
+                return True, "target"
+            if self.trailing_stop and current_price >= self.trailing_stop and self.breakeven_active:
+                return True, "trailing_stop"
+        return False, ""
 
 
 class InstitutionalStrategy:
     """
     Multi-factor institutional footprint strategy.
-    
-    Scores each setup on 5 factors. Only trades score >= 6/8.
     """
     
     def __init__(self, data_feed: DataFeed):
         self.data_feed = data_feed
+        self.positions: Dict[str, Position] = {}
+        self.portfolio_peak: float = 20000.0
+        self.daily_peak: float = 0.0
     
     def calculate_vwap(self, symbol: str) -> Optional[float]:
-        """Calculate VWAP (Volume-Weighted Average Price)."""
+        """Calculate VWAP."""
         try:
             bars = self.data_feed.get_bars_yfinance(symbol, days=1)
             if bars is None or bars.empty:
                 return None
-            
             typical_price = (bars['High'] + bars['Low'] + bars['Close']) / 3
             vwap = (typical_price * bars['Volume']).sum() / bars['Volume'].sum()
             return round(vwap, 2)
@@ -67,7 +133,7 @@ class InstitutionalStrategy:
             logger.error(f"VWAP calc failed for {symbol}: {e}")
             return None
     
-    def calculate_vwap_bands(self, symbol: str, std_dev_multiplier: float = 1.5) -> Optional[Dict]:
+    def calculate_vwap_bands(self, symbol: str) -> Optional[Dict]:
         """Calculate VWAP standard deviation bands."""
         try:
             bars = self.data_feed.get_bars_yfinance(symbol, days=1)
@@ -84,8 +150,8 @@ class InstitutionalStrategy:
             
             return {
                 'vwap': vwap,
-                'upper': round(vwap + std_dev * std_dev_multiplier, 2),
-                'lower': round(vwap - std_dev * std_dev_multiplier, 2),
+                'upper': round(vwap + std_dev * config.vwap_std_dev_multiplier, 2),
+                'lower': round(vwap - std_dev * config.vwap_std_dev_multiplier, 2),
                 'std_dev': round(std_dev, 4),
             }
         except Exception as e:
@@ -99,77 +165,43 @@ class InstitutionalStrategy:
             if bars is None or bars.empty:
                 return None
             
-            # Filter to opening range (9:30-9:45 AM)
             or_bars = bars.between_time('09:30', '09:45')
             if or_bars.empty:
                 return None
             
             or_high = or_bars['High'].max()
             or_low = or_bars['Low'].min()
-            or_range = or_high - or_low
             or_range_pct = (or_high - or_low) / or_low * 100 if or_low > 0 else 0
             
             return {
                 'high': or_high,
                 'low': or_low,
-                'range': or_range,
                 'range_pct': or_range_pct,
-                'is_narrow': or_range_pct < 0.3,
-                'is_wide': or_range_pct > 1.0,
+                'is_narrow': or_range_pct < config.or_narrow_threshold,
+                'is_wide': or_range_pct > config.or_wide_threshold,
             }
         except Exception as e:
             logger.error(f"OR calc failed for {symbol}: {e}")
             return None
     
-    def get_volume_ratio(self, symbol: str) -> Optional[float]:
-        """Get current volume vs 20-period average."""
-        try:
-            bars = self.data_feed.get_bars_yfinance(symbol, days=5)
-            if bars is None or bars.empty:
-                return None
-            
-            current_volume = bars['Volume'].sum()
-            volume_ma = bars['Volume'].rolling(window=20).mean().iloc[-1]
-            
-            if volume_ma == 0:
-                return None
-            
-            return round(current_volume / volume_ma, 2)
-        except Exception as e:
-            logger.error(f"Volume ratio failed for {symbol}: {e}")
-            return None
-    
     def is_execution_window(self) -> bool:
         """Check if current time is in institutional execution window."""
         now = datetime.now().time()
-        # Morning window: 9:45-11:00 AM
-        morning = dtime(9, 45) <= now <= dtime(11, 0)
-        # Afternoon window: 2:00-3:30 PM
-        afternoon = dtime(14, 0) <= now <= dtime(15, 30)
+        morning = config.morning_window_start <= now <= config.morning_window_end
+        afternoon = config.afternoon_window_start <= now <= config.afternoon_window_end
         return morning or afternoon
     
     def generate_signal(self, symbol: str) -> Optional[Signal]:
-        """
-        Generate a signal using multi-factor scoring.
-        
-        Scoring (max 8 points):
-        - VWAP deviation > 1.5 std dev: +2
-        - Volume > 1.5x average: +2
-        - Narrow opening range: +1
-        - In execution window: +1
-        - Price reverts through VWAP: +2
-        
-        Only trade if score >= 6.
-        """
+        """Generate a signal using multi-factor scoring."""
         try:
-            price = self.data_feed.get_latest_price_yfinance(symbol)
+            price = self.data_feed.get_latest_price(symbol)
             if not price:
                 return None
             
-            # Calculate all factors
             vwap_bands = self.calculate_vwap_bands(symbol)
             or_data = self.calculate_opening_range(symbol)
-            volume_ratio = self.get_volume_ratio(symbol)
+            volume_ratio = self.data_feed.get_volume_ratio(symbol)
+            adx = self.data_feed.get_adx(symbol)
             
             if not all([vwap_bands, or_data, volume_ratio]):
                 return None
@@ -182,7 +214,7 @@ class InstitutionalStrategy:
             score = 0
             direction = None
             
-            # Factor 1: VWAP deviation (mean reversion)
+            # Factor 1: VWAP deviation
             if price <= lower_band:
                 score += 2
                 direction = SignalDirection.LONG
@@ -191,7 +223,7 @@ class InstitutionalStrategy:
                 direction = SignalDirection.SHORT
             
             # Factor 2: Volume confirmation
-            if volume_ratio >= 1.5:
+            if volume_ratio >= config.min_volume_mult:
                 score += 2
             elif volume_ratio >= 1.0:
                 score += 1
@@ -204,25 +236,33 @@ class InstitutionalStrategy:
             if self.is_execution_window():
                 score += 1
             
-            # Factor 5: Price reverts through VWAP (confirmation)
+            # Factor 5: Price reverts through VWAP
             if direction == SignalDirection.LONG and price > vwap:
                 score += 2
             elif direction == SignalDirection.SHORT and price < vwap:
                 score += 2
             
+            # Factor 6: ADX trend filter
+            if config.regime_filter and adx:
+                if adx >= config.adx_trend_threshold:
+                    score += 1  # Bonus for trending market
+                elif adx < 15:
+                    score -= 1  # Penalty for choppy market
+            
             # ─── Minimum Score Gate ─────────────────────────────────
-            if score < 6:
+            if score < config.min_score_to_trade:
                 return None
             
             # ─── Calculate Stop/Target ──────────────────────────────
             atr = self.data_feed.get_atr(symbol, config.atr_length) or (price * 0.005)
+            stop_distance = atr * config.atr_stop_multiplier
             
             if direction == SignalDirection.LONG:
-                stop = lower_band - (atr * 0.5)
-                target = upper_band
+                stop = price - stop_distance
+                target = price + (stop_distance * config.rr_ratio)
             else:
-                stop = upper_band + (atr * 0.5)
-                target = lower_band
+                stop = price + stop_distance
+                target = price - (stop_distance * config.rr_ratio)
             
             return Signal(
                 symbol=symbol,
@@ -235,6 +275,7 @@ class InstitutionalStrategy:
                 vwap_deviation=round((price - vwap) / vwap_bands['std_dev'], 2) if vwap_bands['std_dev'] > 0 else 0,
                 or_range_pct=round(or_data['range_pct'], 3),
                 volume_ratio=volume_ratio,
+                adx=adx,
             )
             
         except Exception as e:
@@ -242,13 +283,63 @@ class InstitutionalStrategy:
             return None
     
     def generate_all_signals(self) -> List[Signal]:
-        """Generate signals for all symbols in universe."""
+        """Generate signals for all symbols."""
         signals = []
         for symbol in config.universe:
+            if symbol in self.positions:
+                continue
             signal = self.generate_signal(symbol)
             if signal:
                 signals.append(signal)
-        
-        # Sort by score (highest conviction first)
         signals.sort(key=lambda x: x.score, reverse=True)
         return signals
+    
+    def add_position(self, symbol: str, direction: SignalDirection, price: float, shares: float, stop: float, target: float):
+        """Add a new position."""
+        self.positions[symbol] = Position(
+            symbol=symbol,
+            direction=direction,
+            entry_price=price,
+            shares=shares,
+            stop=stop,
+            target=target,
+        )
+    
+    def update_positions(self, symbol: str, current_price: float):
+        """Update trailing stops and check exits."""
+        if symbol not in self.positions:
+            return None
+        
+        position = self.positions[symbol]
+        position.update_trailing_stop(current_price)
+        
+        should_exit, reason = position.should_exit(current_price)
+        if should_exit:
+            return {
+                'symbol': symbol,
+                'exit_price': current_price,
+                'reason': reason,
+                'pnl': (current_price - position.entry_price) * position.shares if position.direction == SignalDirection.LONG else (position.entry_price - current_price) * position.shares,
+            }
+        
+        return None
+    
+    def close_position(self, symbol: str):
+        """Close a position."""
+        if symbol in self.positions:
+            del self.positions[symbol]
+    
+    def check_max_drawdown(self, current_equity: float) -> bool:
+        """Check if max drawdown exceeded."""
+        if current_equity > self.portfolio_peak:
+            self.portfolio_peak = current_equity
+        drawdown = ((self.portfolio_peak - current_equity) / self.portfolio_peak) * 100
+        return drawdown >= config.max_drawdown_pct
+    
+    def check_sector_exposure(self, symbol: str) -> bool:
+        """Check if adding this symbol would exceed sector limits."""
+        tech_count = sum(1 for s in self.positions if s in config.tech_symbols)
+        if symbol in config.tech_symbols:
+            tech_count += 1
+        max_tech = int(len(config.tech_symbols) * config.max_sector_exposure)
+        return tech_count <= max_tech
