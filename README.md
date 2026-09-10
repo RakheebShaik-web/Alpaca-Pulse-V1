@@ -1,6 +1,6 @@
-# Pulse V1 - Automated Trading System
+# Pulse V1 — Institutional Footprint Trading System
 
-Algorithmic trading system for US stocks using Alpaca Markets.
+Automated US stock trading system using Alpaca Markets. Pre-market gap scanner + Opening Range Breakout strategy with institutional-grade risk management.
 
 ## Strategy
 
@@ -8,10 +8,10 @@ Algorithmic trading system for US stocks using Alpaca Markets.
 |-----------|---------|
 | **Setup** | Pre-market gap scan (0.3%+ gap, 100k+ volume) |
 | **Entry** | Opening Range Breakout (9:30-9:45 AM range) |
-| **Confirmation** | VWAP trend filter |
-| **Stop Loss** | Fixed $50 per trade |
+| **Confirmation** | VWAP + Volume + Multi-factor scoring |
+| **Stop Loss** | ATR-based (1.5x ATR distance) |
 | **Take Profit** | 2:1 reward-to-risk |
-| **Time Exit** | 10:50 AM |
+| **Time Exit** | 3:50 PM (10 mins before close) |
 | **Daily Limits** | Max 3 trades, $200 loss, $150 profit target |
 
 ## Architecture
@@ -68,16 +68,14 @@ uvicorn main:app --host 0.0.0.0 --port 8000
 | `/api/status` | GET | System status |
 | `/api/account` | GET | Account details |
 | `/api/positions` | GET | Active positions |
-| `/api/orders` | GET | Open/closed orders |
 | `/api/trades` | GET | Trade history |
-| `/api/daily` | GET | Daily statistics |
 | `/api/scan` | GET | Pre-market scan results |
 | `/api/clock` | GET | Market clock |
-| `/api/price/{symbol}` | GET | Latest price |
-| `/api/start` | POST | Start trading |
-| `/api/stop` | POST | Stop trading |
-| `/api/close-all` | POST | Close all positions |
-| `/api/cancel-all` | POST | Cancel all orders |
+| `/api/daily` | GET | Daily statistics |
+| `/api/start` | POST | Start trading (admin) |
+| `/api/stop` | POST | Stop trading (admin) |
+| `/api/close-all` | POST | Close all positions (admin) |
+| `/api/cancel-all` | POST | Cancel all orders (admin) |
 
 ### Environment Variables
 
@@ -86,6 +84,7 @@ ALPACA_API_KEY=***
 ALPACA_SECRET_KEY=***
 PAPER_TRADING=true
 DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/... (optional)
+ADMIN_API_KEY=your_admin_password
 ```
 
 ## Render Deployment
@@ -105,3 +104,7 @@ See [Pulse-V1-dashboard](https://github.com/RakheebShaik-web/Pulse-V1-dashboard)
 - Start with paper trading
 - $50/trade = max $150/day loss
 - Never risk more than you can afford to lose
+
+## License
+
+MIT
