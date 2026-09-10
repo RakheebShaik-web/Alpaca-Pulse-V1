@@ -56,12 +56,12 @@ class InstitutionalStrategy:
     def calculate_vwap(self, symbol: str) -> Optional[float]:
         """Calculate VWAP (Volume-Weighted Average Price)."""
         try:
-            bars = self.data_feed.get_bars(symbol, days=1)
+            bars = self.data_feed.get_bars_yfinance(symbol, days=1)
             if bars is None or bars.empty:
                 return None
             
-            typical_price = (bars['high'] + bars['low'] + bars['close']) / 3
-            vwap = (typical_price * bars['volume']).sum() / bars['volume'].sum()
+            typical_price = (bars['High'] + bars['Low'] + bars['Close']) / 3
+            vwap = (typical_price * bars['Volume']).sum() / bars['Volume'].sum()
             return round(vwap, 2)
         except Exception as e:
             logger.error(f"VWAP calc failed for {symbol}: {e}")
@@ -70,7 +70,7 @@ class InstitutionalStrategy:
     def calculate_vwap_bands(self, symbol: str, std_dev_multiplier: float = 1.5) -> Optional[Dict]:
         """Calculate VWAP standard deviation bands."""
         try:
-            bars = self.data_feed.get_bars(symbol, days=1)
+            bars = self.data_feed.get_bars_yfinance(symbol, days=1)
             if bars is None or bars.empty:
                 return None
             
@@ -78,8 +78,8 @@ class InstitutionalStrategy:
             if not vwap:
                 return None
             
-            typical_price = (bars['high'] + bars['low'] + bars['close']) / 3
-            variance = ((typical_price - vwap) ** 2 * bars['volume']).sum() / bars['volume'].sum()
+            typical_price = (bars['High'] + bars['Low'] + bars['Close']) / 3
+            variance = ((typical_price - vwap) ** 2 * bars['Volume']).sum() / bars['Volume'].sum()
             std_dev = np.sqrt(variance)
             
             return {
@@ -95,7 +95,7 @@ class InstitutionalStrategy:
     def calculate_opening_range(self, symbol: str) -> Optional[Dict]:
         """Calculate opening range (9:30-9:45 AM)."""
         try:
-            bars = self.data_feed.get_bars(symbol, days=1)
+            bars = self.data_feed.get_bars_yfinance(symbol, days=1)
             if bars is None or bars.empty:
                 return None
             
@@ -104,8 +104,8 @@ class InstitutionalStrategy:
             if or_bars.empty:
                 return None
             
-            or_high = or_bars['high'].max()
-            or_low = or_bars['low'].min()
+            or_high = or_bars['High'].max()
+            or_low = or_bars['Low'].min()
             or_range = or_high - or_low
             or_range_pct = (or_high - or_low) / or_low * 100 if or_low > 0 else 0
             
@@ -124,12 +124,12 @@ class InstitutionalStrategy:
     def get_volume_ratio(self, symbol: str) -> Optional[float]:
         """Get current volume vs 20-period average."""
         try:
-            bars = self.data_feed.get_bars(symbol, days=5)
+            bars = self.data_feed.get_bars_yfinance(symbol, days=5)
             if bars is None or bars.empty:
                 return None
             
-            current_volume = bars['volume'].sum()
-            volume_ma = bars['volume'].rolling(window=20).mean().iloc[-1]
+            current_volume = bars['Volume'].sum()
+            volume_ma = bars['Volume'].rolling(window=20).mean().iloc[-1]
             
             if volume_ma == 0:
                 return None
@@ -162,7 +162,7 @@ class InstitutionalStrategy:
         Only trade if score >= 6.
         """
         try:
-            price = self.data_feed.get_latest_price(symbol)
+            price = self.data_feed.get_latest_price_yfinance(symbol)
             if not price:
                 return None
             

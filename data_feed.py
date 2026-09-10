@@ -1,13 +1,15 @@
 """
-data_feed.py — Multi-timeframe market data fetching.
-Institutional-grade with proper error handling and data validation.
+data_feed.py — Market data fetching using yfinance.
+Alpaca free tier has SIP data limits, so we use yfinance for market data.
+Alpaca is used only for trading execution.
 """
 import logging
 from datetime import datetime, timedelta
-from typing import Optional, Dict, Tuple
+from typing import Optional, Dict, List
 
 import pandas as pd
 import numpy as np
+import yfinance as yf
 
 from alpaca_trader import AlpacaTrader
 from config import config
@@ -16,37 +18,64 @@ logger = logging.getLogger(__name__)
 
 
 class DataFeed:
-    """Fetch and process multi-timeframe market data."""
+    """Fetch and process market data using yfinance."""
     
     def __init__(self, trader: AlpacaTrader):
         self.trader = trader
     
-    def get_bars(self, symbol: str, days: int = 5) -> Optional[pd.DataFrame]:
-        """Fetch recent price bars."""
+    def get_bars_yfinance(self, symbol: str, days: int = 5) -> Optional[pd.DataFrame]:
+        """Fetch recent price bars using yfinance (bypasses Alpaca SIP limits)."""
         try:
-            return self.trader.get_bars(symbol, days)
+            end = datetime.now()
+            start = end - timedelta(days=days + 3)
+            
+            ticker = yf.Ticker(symbol)
+            df = ticker.history(
+                start=start.strftime("%Y-%m-%d"),
+                end=end.strftime("%Y-%m-%d"),
+                interval="1m",
+                prepost=True,
+                repair=True,
+            )
+            
+            if df.empty:
+                return None
+            
+            # Normalize index
+            df.index = df.index.tz_localize(None) if df.index.tz else df.index
+            df = df.sort_index()
+            
+            return df
         except Exception as e:
             logger.error(f"Failed to get bars for {symbol}: {e}")
             return None
     
-    def get_latest_price(self, symbol: str) -> Optional[float]:
-        """Get latest mid-price."""
+    def get_latest_price_yfinance(self, symbol: str) -> Optional[float]:
+        """Get latest trade price using yfinance."""
         try:
-            return self.trader.get_latest_price(symbol)
+            ticker = yf.Ticker(symbol)
+            data = ticker.history(period="1d", interval="1m")
+            if not data.empty:
+                return round(float(data['Close'].iloc[-1]), 2)
+            return None
         except Exception as e:
             logger.error(f"Failed to get price for {symbol}: {e}")
             return None
     
+    def get_latest_price(self, symbol: str) -> Optional[float]:
+        """Get latest price (uses yfinance)."""
+        return self.get_latest_price_yfinance(symbol)
+    
     def get_atr(self, symbol: str, period: int = 14) -> Optional[float]:
         """Calculate Average True Range."""
         try:
-            bars = self.get_bars(symbol, days=5)
+            bars = self.get_bars_yfinance(symbol, days=5)
             if bars is None or len(bars) < period:
                 return None
             
-            high = bars['high']
-            low = bars['low']
-            prev_close = bars['close'].shift(1)
+            high = bars['High']
+            low = bars['Low']
+            prev_close = bars['Close'].shift(1)
             
             tr = pd.concat([
                 high - low,
@@ -63,12 +92,12 @@ class DataFeed:
     def get_volume_ma(self, symbol: str, period: int = 20) -> Optional[float]:
         """Calculate Volume Moving Average."""
         try:
-            bars = self.get_bars(symbol, days=5)
+            bars = self.get_bars_yfinance(symbol, days=5)
             if bars is None or len(bars) < period:
                 return None
             
-            volume_ma = bars['volume'].rolling(window=period).mean().iloc[-1]
-            return int(volume_ma)
+            volume_ma = bars['Volume'].rolling(window=period).mean().iloc[-1]
+            return float(volume_ma)
         except Exception as e:
             logger.error(f"Failed to get volume MA for {symbol}: {e}")
             return None
@@ -76,11 +105,11 @@ class DataFeed:
     def get_ema(self, symbol: str, period: int = 20) -> Optional[float]:
         """Calculate Exponential Moving Average."""
         try:
-            bars = self.get_bars(symbol, days=10)
+            bars = self.get_bars_yfinance(symbol, days=10)
             if bars is None or len(bars) < period:
                 return None
             
-            ema = bars['close'].ewm(span=period, adjust=False).mean().iloc[-1]
+            ema = bars['Close'].ewm(span=period, adjust=False).mean().iloc[-1]
             return round(ema, 2)
         except Exception as e:
             logger.error(f"Failed to get EMA for {symbol}: {e}")
@@ -102,80 +131,88 @@ class DataFeed:
             logger.error(f"Clock fetch failed: {e}")
             return None
     
-    def calculate_alma(self, symbol: str, length: int = 2, sigma: float = 5.0, offset: float = 0.85) -> Optional[pd.Series]:
-        """
-        Calculate ALMA (Arnaud Legoux Moving Average).
-        Institutional-grade smoothing with Gaussian distribution.
-        """
+    def calculate_vwap(self, symbol: str) -> Optional[float]:
+        """Calculate VWAP (Volume-Weighted Average Price)."""
         try:
-            bars = self.get_bars(symbol, days=10)
-            if bars is None or len(bars) < length:
-                return None
-            
-            close = bars['close'].values
-            alma = self._alma(close, length, sigma, offset)
-            return pd.Series(alma, index=bars.index)
-        except Exception as e:
-            logger.error(f"Failed to calculate ALMA for {symbol}: {e}")
-            return None
-    
-    def _alma(self, data: np.ndarray, length: int, sigma: float, offset: float) -> np.ndarray:
-        """ALMA calculation with Gaussian weights."""
-        m = offset * (length - 1)
-        s = length / sigma
-        w = np.exp(-((np.arange(length) - m) ** 2) / (2 * s ** 2))
-        w = w / w.sum()
-        
-        alma = np.convolve(data, w[::-1], mode='valid')
-        # Pad with NaN for alignment
-        pad = len(data) - len(alma)
-        return np.concatenate([np.full(pad, np.nan), alma])
-    
-    def resample_to_htf(self, symbol: str, htf_minutes: int = 15) -> Optional[pd.DataFrame]:
-        """
-        Resample 5m bars to higher timeframe (15m, 2h, etc.).
-        Used for multi-timeframe analysis.
-        """
-        try:
-            bars = self.get_bars(symbol, days=5)
+            bars = self.get_bars_yfinance(symbol, days=1)
             if bars is None or bars.empty:
                 return None
             
-            # Resample to HTF
-            rule = f'{htf_minutes}min'
-            htf_bars = bars.resample(rule).agg({
-                'open': 'first',
-                'high': 'max',
-                'low': 'min',
-                'close': 'last',
-                'volume': 'sum'
-            }).dropna()
-            
-            return htf_bars
+            typical_price = (bars['High'] + bars['Low'] + bars['Close']) / 3
+            vwap = (typical_price * bars['Volume']).sum() / bars['Volume'].sum()
+            return round(vwap, 2)
         except Exception as e:
-            logger.error(f"Failed to resample {symbol} to {htf_minutes}m: {e}")
+            logger.error(f"VWAP calc failed for {symbol}: {e}")
             return None
     
-    def get_highest_high(self, symbol: str, lookback: int = 20) -> Optional[float]:
-        """Get highest high over lookback period."""
+    def calculate_vwap_bands(self, symbol: str, std_dev_multiplier: float = 1.5) -> Optional[Dict]:
+        """Calculate VWAP standard deviation bands."""
         try:
-            bars = self.get_bars(symbol, days=5)
-            if bars is None or len(bars) < lookback:
+            bars = self.get_bars_yfinance(symbol, days=1)
+            if bars is None or bars.empty:
                 return None
             
-            return bars['high'].rolling(window=lookback).max().iloc[-1]
+            vwap = self.calculate_vwap(symbol)
+            if not vwap:
+                return None
+            
+            typical_price = (bars['High'] + bars['Low'] + bars['Close']) / 3
+            variance = ((typical_price - vwap) ** 2 * bars['Volume']).sum() / bars['Volume'].sum()
+            std_dev = np.sqrt(variance)
+            
+            return {
+                'vwap': vwap,
+                'upper': round(vwap + std_dev * std_dev_multiplier, 2),
+                'lower': round(vwap - std_dev * std_dev_multiplier, 2),
+                'std_dev': round(std_dev, 4),
+            }
         except Exception as e:
-            logger.error(f"Failed to get highest high for {symbol}: {e}")
+            logger.error(f"VWAP bands failed for {symbol}: {e}")
             return None
     
-    def get_lowest_low(self, symbol: str, lookback: int = 20) -> Optional[float]:
-        """Get lowest low over lookback period."""
+    def calculate_opening_range(self, symbol: str) -> Optional[Dict]:
+        """Calculate opening range (9:30-9:45 AM)."""
         try:
-            bars = self.get_bars(symbol, days=5)
-            if bars is None or len(bars) < lookback:
+            bars = self.get_bars_yfinance(symbol, days=1)
+            if bars is None or bars.empty:
                 return None
             
-            return bars['low'].rolling(window=lookback).min().iloc[-1]
+            # Filter to opening range (9:30-9:45 AM)
+            or_bars = bars.between_time('09:30', '09:45')
+            if or_bars.empty:
+                return None
+            
+            or_high = or_bars['High'].max()
+            or_low = or_bars['Low'].min()
+            or_range = or_high - or_low
+            or_range_pct = (or_high - or_low) / or_low * 100 if or_low > 0 else 0
+            
+            return {
+                'high': or_high,
+                'low': or_low,
+                'range': or_range,
+                'range_pct': or_range_pct,
+                'is_narrow': or_range_pct < 0.3,
+                'is_wide': or_range_pct > 1.0,
+            }
         except Exception as e:
-            logger.error(f"Failed to get lowest low for {symbol}: {e}")
+            logger.error(f"OR calc failed for {symbol}: {e}")
+            return None
+    
+    def get_volume_ratio(self, symbol: str) -> Optional[float]:
+        """Get current volume vs 20-period average."""
+        try:
+            bars = self.get_bars_yfinance(symbol, days=5)
+            if bars is None or bars.empty:
+                return None
+            
+            current_volume = bars['Volume'].sum()
+            volume_ma = bars['Volume'].rolling(window=20).mean().iloc[-1]
+            
+            if volume_ma == 0:
+                return None
+            
+            return round(current_volume / volume_ma, 2)
+        except Exception as e:
+            logger.error(f"Volume ratio failed for {symbol}: {e}")
             return None
