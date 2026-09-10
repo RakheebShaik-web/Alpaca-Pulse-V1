@@ -39,7 +39,7 @@ class StrategyConfig:
     atr_stop_multiplier: float = 1.5
     
     # ─── Multi-Factor Scoring ────────────────────────────────────
-    min_score_to_trade: int = 6        # Out of 8 max
+    min_score_to_trade: int = 4        # Out of 8 max (lowered from 6 for more trades)
     
     # ─── Timing ──────────────────────────────────────────────────
     trading_start: time = time(9, 30)
