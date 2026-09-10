@@ -12,18 +12,32 @@ Alpha sources:
 8. Breakeven activation (protect capital)
 """
 import logging
-from datetime import datetime
+from datetime import datetime, time as dtime
 from typing import Optional, List, Dict
 from dataclasses import dataclass, field
 from enum import Enum
 
 import pandas as pd
 import numpy as np
+import pytz
 
 from config import config
 from data_feed import DataFeed
 
 logger = logging.getLogger(__name__)
+
+# US Eastern timezone for market hours
+ET = pytz.timezone('US/Eastern')
+
+
+def get_et_now() -> datetime:
+    """Get current time in US Eastern timezone."""
+    return datetime.now(ET)
+
+
+def get_et_time() -> dtime:
+    """Get current time in US Eastern timezone."""
+    return get_et_now().time()
 
 
 class SignalDirection(str, Enum):
@@ -186,8 +200,10 @@ class InstitutionalStrategy:
     
     def is_execution_window(self) -> bool:
         """Check if current time is in institutional execution window."""
-        now = datetime.now().time()
+        now = get_et_time()
+        # Morning window: 9:45-11:00 AM ET
         morning = config.morning_window_start <= now <= config.morning_window_end
+        # Afternoon window: 2:00-3:30 PM ET
         afternoon = config.afternoon_window_start <= now <= config.afternoon_window_end
         return morning or afternoon
     

@@ -21,7 +21,7 @@ from alpaca_trader import AlpacaTrader
 from discord_notifier import DiscordNotifier
 from state_store import BotState, TradePosition, load_state, save_state, new_position
 from data_feed import DataFeed
-from institutional_strategy import InstitutionalStrategy, Signal, SignalDirection, Position
+from institutional_strategy import InstitutionalStrategy, Signal, SignalDirection, Position, get_et_now, get_et_time
 from csv_log import log_trade, get_trade_summary
 from trade_journal import journal
 from earnings_filter import earnings_filter
@@ -250,7 +250,7 @@ async def trading_loop():
     
     while system.status == "running":
         try:
-            now = datetime.now()
+            now = get_et_now()
             current_time = now.time()
             
             # Heartbeat every 5 minutes
