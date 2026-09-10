@@ -23,6 +23,8 @@ from state_store import BotState, TradePosition, load_state, save_state, new_pos
 from data_feed import DataFeed
 from institutional_strategy import InstitutionalStrategy, Signal, SignalDirection, Position
 from csv_log import log_trade, get_trade_summary
+from trade_journal import journal
+from earnings_filter import earnings_filter
 
 logging.basicConfig(
     level=logging.INFO,
@@ -151,6 +153,14 @@ async def get_trades():
 @app.get("/api/daily")
 async def get_daily_stats():
     return get_trade_summary()
+
+@app.get("/api/weekly")
+async def get_weekly_summary():
+    return journal.get_weekly_summary()
+
+@app.get("/api/journal")
+async def get_journal():
+    return journal.get_summary()
 
 @app.get("/api/scan")
 async def get_scan():
@@ -328,6 +338,15 @@ async def trading_loop():
                             status="closed",
                         )
                         
+                        # Update journal
+                        journal.close_entry(
+                            symbol=symbol,
+                            exit_price=price,
+                            exit_reason=reason,
+                            trailing_stop_used=position.trailing_stop is not None,
+                            breakeven_hit=position.breakeven_active,
+                        )
+                        
                         # Remove from tracking
                         system.strategy.close_position(symbol)
                         save_state(system.state)
@@ -368,6 +387,10 @@ async def trading_loop():
                     if not system.strategy.check_sector_exposure(symbol):
                         continue
                     
+                    # Check earnings filter
+                    if earnings_filter.should_skip(symbol):
+                        continue
+                    
                     # Calculate position size — exactly $50 risk per trade
                     stop_distance = abs(signal.price - signal.stop)
                     if stop_distance <= 0:
@@ -375,6 +398,11 @@ async def trading_loop():
                     size = max(1, int(config.risk_per_trade / stop_distance))
                     max_size = int(config.capital * config.max_position_pct / signal.price)
                     size = min(size, max_size)
+                    
+                    # Verify risk is close to $50
+                    actual_risk = stop_distance * size
+                    if actual_risk > config.risk_per_trade * 1.2:
+                        size = max(1, int(config.risk_per_trade / stop_distance))
                     
                     # Submit bracket order
                     result = system.trader.submit_bracket_order(
@@ -409,7 +437,7 @@ async def trading_loop():
                         )
                         system.state.add_position(position)
                         
-                        # Log trade
+                        # Log trade to CSV
                         log_trade(
                             symbol=symbol,
                             side=signal.direction.value,
@@ -419,6 +447,19 @@ async def trading_loop():
                             target_price=signal.target,
                             status="open",
                             notes=f"score={signal.score} pos_id={position.position_id}",
+                        )
+                        
+                        # Add to journal
+                        journal.add_entry(
+                            symbol=symbol,
+                            side=signal.direction.value,
+                            entry_price=signal.price,
+                            shares=size,
+                            stop_price=signal.stop,
+                            target_price=signal.target,
+                            score=signal.score,
+                            setup=f"VWAP dev: {signal.vwap_deviation}, Vol: {signal.volume_ratio}x",
+                            regime="trending" if signal.adx and signal.adx > 25 else "choppy",
                         )
                         
                         # Send alert

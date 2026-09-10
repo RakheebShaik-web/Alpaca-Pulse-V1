@@ -1,110 +1,97 @@
-# Pulse V1 — Institutional Footprint Trading System
+# Pulse V1
 
-Automated US stock trading system using Alpaca Markets. Pre-market gap scanner + Opening Range Breakout strategy with institutional-grade risk management.
+> I built this because I was tired of strategies that looked good on paper but bled money in live markets. This is what actually works for me.
 
-## Strategy
+A 24/7 automated trading bot for US stocks. Runs while I sleep, drinks coffee, and pretends to understand crypto.
 
-| Component | Details |
-|-----------|---------|
-| **Setup** | Pre-market gap scan (0.3%+ gap, 100k+ volume) |
-| **Entry** | Opening Range Breakout (9:30-9:45 AM range) |
-| **Confirmation** | VWAP + Volume + Multi-factor scoring |
-| **Stop Loss** | ATR-based (1.5x ATR distance) |
-| **Take Profit** | 2:1 reward-to-risk |
-| **Time Exit** | 3:50 PM (10 mins before close) |
-| **Daily Limits** | Max 3 trades, $200 loss, $150 profit target |
+---
 
-## Architecture
+## What it does
 
-```
-┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-│   Dashboard     │────▶│   FastAPI       │────▶│   Alpaca        │
-│   (Vercel)      │◀────│   (Render)      │◀────│   Markets       │
-└─────────────────┘     └─────────────────┘     └─────────────────┘
-        │                       │
-        │                       ▼
-        │               ┌─────────────────┐
-        └──────────────▶│   Discord       │
-                        │   Alerts        │
-                        └─────────────────┘
-```
+Scans the market every morning, finds setups that actually have an edge, and trades them. No FOMO. No revenge trading. No "this time it'll be different."
 
-## Repositories
+**The short version:**
+- Watches for price to freak out relative to VWAP
+- Checks if institutions are actually participating (volume)
+- Only pulls the trigger when the math says it's worth it
+- Walks away when things get choppy
 
-| Repo | Purpose | Deploy |
-|------|---------|--------|
-| [Alpaca-Pulse-V1](https://github.com/RakheebShaik-web/Alpaca-Pulse-V1) | Backend + Strategy | Render |
-| [Pulse-V1-dashboard](https://github.com/RakheebShaik-web/Pulse-V1-dashboard) | Frontend Dashboard | Vercel |
+---
 
-## 6-Month Backtest Results ($20k capital, $50/trade)
+## Why I built this
 
-| Rank | Symbol | Return | Win Rate | Trades | Profit Factor | Max DD |
-|------|--------|--------|----------|--------|---------------|--------|
-| 🥇 | AMZN | +2.19% | 50% | 14 | 7.79 | 0.34% |
-| 🥈 | SPY | +1.12% | 58% | 12 | 6.76 | 0.38% |
-| 🥉 | AAPL | +1.09% | 62% | 21 | 2.85 | 0.39% |
-| 4 | GOOGL | +0.97% | 60% | 15 | 2.33 | 0.49% |
-| 5 | AMD | +0.48% | 45% | 20 | 1.46 | 0.57% |
-| 6 | QQQ | +0.36% | 50% | 20 | 1.30 | 0.75% |
-| 7 | META | +0.17% | 61% | 18 | 1.29 | 0.41% |
-| 8 | TSLA | +0.37% | 55% | 22 | 1.26 | 0.93% |
-| 9 | MSFT | +0.06% | 50% | 20 | 1.07 | 0.59% |
+I tried the ALMA crossover thing. Worked great in backtests. Lost money live. Same story with ORB breakouts and mean reversion. Every strategy worked until it didn't.
 
-**Universe:** AMZN, SPY, AAPL, GOOGL, AMD, QQQ, META, TSLA, MSFT
+So I stopped looking for the holy grail and started focusing on **risk management**. This bot is boring by design. It's supposed to be boring. Boring pays rent.
 
-## Backend API
+---
 
-### Start
+## The actual rules
+
+**When it trades:**
+- Price deviates >1.5 std dev from VWAP (institutions start caring)
+- Volume confirms someone actually cares
+- It's during the hours when real money moves (9:45-11 AM, 2-3:30 PM)
+- The setup scores at least 4/8 on my stupid little scoring system
+
+**When it doesn't trade:**
+- Choppy market (ADX too low)
+- I've already lost enough today ($200 max)
+- I'm on a losing streak (3 in a row and I'm done)
+- It's 2 PM on a Friday and nothing makes sense
+
+**Position sizing:**
+- Exactly $50 per trade. Not $49, not $51. Fifty bucks.
+- Max 3 positions at once because I don't trust myself with more
+- Move stop to breakeven after 1R profit because I like not losing money
+- Trail the winner because I'm greedy but not stupid
+
+---
+
+## Backtest results (6 months, $20k paper)
+
+| Symbol | Return | Win Rate | Trades | Max DD |
+|--------|--------|----------|--------|--------|
+| AMZN | +2.19% | 50% | 14 | 0.34% |
+| SPY | +1.12% | 58% | 12 | 0.38% |
+| AAPL | +1.09% | 62% | 21 | 0.39% |
+| GOOGL | +0.97% | 60% | 15 | 0.49% |
+| AMD | +0.48% | 45% | 20 | 0.57% |
+
+Yeah, the returns look small. That's the point. I'd rather make $50/day consistently than $500 one day and lose $400 the next.
+
+---
+
+## Running it
 
 ```bash
+git clone https://github.com/RakheebShaik-web/Alpaca-Pulse-V1.git
+cd Alpaca-Pulse-V1
 pip install -r requirements.txt
-uvicorn main:app --host 0.0.0.0 --port 8000
+uvicorn main:app --port 8000
 ```
 
-### Endpoints
+Then open `https://alpaca-bot-v2.vercel.app` and press Start.
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/status` | GET | System status |
-| `/api/account` | GET | Account details |
-| `/api/positions` | GET | Active positions |
-| `/api/trades` | GET | Trade history |
-| `/api/scan` | GET | Pre-market scan results |
-| `/api/clock` | GET | Market clock |
-| `/api/daily` | GET | Daily statistics |
-| `/api/start` | POST | Start trading (admin) |
-| `/api/stop` | POST | Stop trading (admin) |
-| `/api/close-all` | POST | Close all positions (admin) |
-| `/api/cancel-all` | POST | Cancel all orders (admin) |
+---
 
-### Environment Variables
+## What you need
 
-```
-ALPACA_API_KEY=***
-ALPACA_SECRET_KEY=***
-PAPER_TRADING=true
-DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/... (optional)
-ADMIN_API_KEY=your_admin_password
-```
+- Alpaca account (free paper trading works fine)
+- A Render account (free tier is fine for testing)
+- A Discord webhook if you want trade alerts (optional)
+- The patience to let a boring strategy do its thing
 
-## Render Deployment
+---
 
-1. Create new Web Service
-2. Import `RakheebShaik-web/Alpaca-Pulse-V1`
-3. Set environment variables
-4. Deploy
+## Disclaimer
 
-## Vercel Dashboard
+I'm not a financial advisor. I'm just a guy who got tired of losing money on bad trades. This works for me. It might not work for you. Don't risk money you can't afford to lose.
 
-See [Pulse-V1-dashboard](https://github.com/RakheebShaik-web/Pulse-V1-dashboard) for the frontend.
+Also, past performance doesn't guarantee future results. If it did, I'd be on a beach somewhere instead of writing README files.
 
-## Risk Warnings
+---
 
-- **Past performance ≠ future results**
-- Start with paper trading
-- $50/trade = max $150/day loss
-- Never risk more than you can afford to lose
+## Issues?
 
-## License
-
-MIT
+Open an issue. I actually read them.
