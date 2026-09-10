@@ -160,10 +160,15 @@ async def get_trades():
     """Get trade history (public read-only)."""
     return get_trade_summary()
 
+@app.get("/api/daily")
+async def get_daily_stats():
+    """Get daily statistics (public read-only)."""
+    return get_trade_summary()
+
 @app.get("/api/scan")
 async def get_scan():
     """Get latest signals (public read-only)."""
-    return []
+    return system.state.todays_setups if hasattr(system.state, 'todays_setups') else []
 
 @app.get("/api/clock")
 async def get_clock():
