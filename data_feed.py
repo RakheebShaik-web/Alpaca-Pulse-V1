@@ -27,7 +27,7 @@ class DataFeed:
         """Fetch recent price bars using yfinance."""
         try:
             end = datetime.now()
-            start = end - timedelta(days=days + 3)
+            start = end - timedelta(days=min(days + 3, 7))
             
             ticker = yf.Ticker(symbol)
             df = ticker.history(
@@ -42,8 +42,10 @@ class DataFeed:
                 return None
             
             # Normalize index
-            df.index = df.index.tz_localize(None) if df.index.tz else df.index
+            df.index = df.index.tz_convert('America/New_York').tz_localize(None) if df.index.tz else df.index
             df = df.sort_index()
+            now = pd.Timestamp.now(tz='America/New_York').tz_localize(None)
+            df = df.loc[df.index + pd.Timedelta(minutes=1) <= now]
             
             return df
         except Exception as e:
@@ -53,9 +55,8 @@ class DataFeed:
     def get_latest_price(self, symbol: str) -> Optional[float]:
         """Get latest price using yfinance."""
         try:
-            ticker = yf.Ticker(symbol)
-            data = ticker.history(period="1d", interval="1m")
-            if not data.empty:
+            data = self.get_bars_yfinance(symbol, days=1)
+            if data is not None and not data.empty:
                 return round(float(data['Close'].iloc[-1]), 2)
             return None
         except Exception as e:
@@ -237,7 +238,7 @@ class DataFeed:
             if bars is None or bars.empty:
                 return None
             
-            current_volume = bars['Volume'].sum()
+            current_volume = bars['Volume'].iloc[-1]
             volume_ma = bars['Volume'].rolling(window=20).mean().iloc[-1]
             
             if volume_ma == 0:

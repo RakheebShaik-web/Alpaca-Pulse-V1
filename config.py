@@ -11,6 +11,7 @@ class StrategyConfig:
     # ─── Capital & Risk ───────────────────────────────────────────
     capital: float = 20_000
     risk_per_trade: float = 50
+    rr_ratio: float = 2.0
     max_trades_per_day: int = 3
     max_daily_loss: float = 200
     target_daily_pnl: float = 150

@@ -3,3 +3,7 @@ __pycache__/
 .env
 *.log
 .DS_Store
+
+.venv/
+.pytest_cache/
+data/

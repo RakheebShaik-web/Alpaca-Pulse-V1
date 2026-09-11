@@ -35,10 +35,26 @@ class TradePosition:
     tp3_filled: bool = False
     opened_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat(timespec="seconds"))
     notes: str = ""
+    entry_order_id: Optional[str] = None
+    entry_client_id: Optional[str] = None
+    exit_order_ids: List[str] = field(default_factory=list)
+    exit_client_id: Optional[str] = None
+    exit_reason: str = ""
+    entry_confirmed: bool = False
+    entry_reported: bool = False
+    accounted_fills: Dict[str, dict] = field(default_factory=dict)
+    accounted_exit_qty: float = 0.0
+    accounted_exit_value: float = 0.0
+    realized_pnl: float = 0.0
+    trailing_stop: Optional[float] = None
+    highest_profit: float = 0.0
+    breakeven_active: bool = False
 
 
 @dataclass
 class BotState:
+    session_date: Optional[str] = None
+    portfolio_peak: float = 20000.0
     version: int = STATE_SCHEMA_VERSION
     balance: float = 20000.0
     daily_pnl: float = 0.0
@@ -46,34 +62,36 @@ class BotState:
     consecutive_losses: int = 0
     last_trade_at: Optional[str] = None
     last_sl_at: Optional[str] = None
-    positions: Dict[str, List[Position]] = field(default_factory=dict)
+    positions: Dict[str, List[TradePosition]] = field(default_factory=dict)
     
-    def all_positions(self) -> List[Position]:
+    def all_positions(self) -> List[TradePosition]:
         all_pos = []
         for symbol, positions in self.positions.items():
             all_pos.extend(positions)
         return all_pos
     
-    def get_position(self, position_id: str) -> Optional[Position]:
+    def get_position(self, position_id: str) -> Optional[TradePosition]:
         for symbol, positions in self.positions.items():
             for pos in positions:
                 if pos.position_id == position_id:
                     return pos
         return None
     
-    def add_position(self, position: Position):
+    def add_position(self, position: TradePosition):
         if position.symbol not in self.positions:
             self.positions[position.symbol] = []
         self.positions[position.symbol].append(position)
     
     def remove_position(self, position_id: str):
-        for symbol, positions in self.positions.items():
+        for symbol, positions in list(self.positions.items()):
             self.positions[symbol] = [p for p in positions if p.position_id != position_id]
             if not self.positions[symbol]:
                 del self.positions[symbol]
     
     def to_dict(self) -> dict:
         return {
+            "session_date": self.session_date,
+            "portfolio_peak": self.portfolio_peak,
             "version": self.version,
             "balance": self.balance,
             "daily_pnl": self.daily_pnl,
@@ -90,6 +108,8 @@ class BotState:
     @classmethod
     def from_dict(cls, data: dict) -> "BotState":
         state = cls()
+        state.session_date = data.get("session_date")
+        state.portfolio_peak = data.get("portfolio_peak", 20000.0)
         state.version = data.get("version", STATE_SCHEMA_VERSION)
         state.balance = data.get("balance", 20000.0)
         state.daily_pnl = data.get("daily_pnl", 0.0)
@@ -101,7 +121,7 @@ class BotState:
         for symbol, positions in data.get("positions", {}).items():
             state.positions[symbol] = []
             for p in data["positions"][symbol]:
-                state.positions[symbol].append(Position(**p))
+                state.positions[symbol].append(TradePosition(**p))
         
         return state
 
@@ -134,7 +154,7 @@ def load_state() -> BotState:
                 return state
             except Exception:
                 pass
-        return BotState()
+        raise RuntimeError('State and backup cannot be read; refusing to discard trading history') from e
 
 
 def save_state(state: BotState):
@@ -162,6 +182,7 @@ def save_state(state: BotState):
         logger.error(f"Failed to save state: {e}")
         if tmp_path.exists():
             tmp_path.unlink()
+        raise
 
 
 def new_position(

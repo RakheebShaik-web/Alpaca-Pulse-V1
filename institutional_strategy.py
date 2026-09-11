@@ -75,19 +75,24 @@ class Position:
     breakeven_active: bool = False
     initial_risk: float = 0.0
     
+    def __post_init__(self):
+        self.initial_risk = abs(self.entry_price - self.stop)
+
     def update_trailing_stop(self, current_price: float, atr: float):
         """Update trailing stop based on highest profit."""
+        if not config.trailing_stop_enabled:
+            return
         if self.direction == SignalDirection.LONG:
             profit = current_price - self.entry_price
             if profit > self.highest_profit:
                 self.highest_profit = profit
             # Activate breakeven after 1R profit
-            if profit >= self.initial_risk * 1.0 and not self.breakeven_active:
+            if profit >= self.initial_risk * config.breakeven_activation and not self.breakeven_active:
                 self.breakeven_active = True
                 self.trailing_stop = self.entry_price
             # Trailing stop: 2x ATR from highest point
-            if self.highest_profit > self.initial_risk:
-                trail_distance = atr * 2.0
+            if self.highest_profit >= self.initial_risk * config.trailing_stop_activation:
+                trail_distance = atr * config.trailing_stop_multiplier
                 new_trail = current_price - trail_distance
                 if self.trailing_stop is None or new_trail > self.trailing_stop:
                     self.trailing_stop = new_trail
@@ -95,11 +100,11 @@ class Position:
             profit = self.entry_price - current_price
             if profit > self.highest_profit:
                 self.highest_profit = profit
-            if profit >= self.initial_risk * 1.0 and not self.breakeven_active:
+            if profit >= self.initial_risk * config.breakeven_activation and not self.breakeven_active:
                 self.breakeven_active = True
                 self.trailing_stop = self.entry_price
-            if self.highest_profit > self.initial_risk:
-                trail_distance = atr * 2.0
+            if self.highest_profit >= self.initial_risk * config.trailing_stop_activation:
+                trail_distance = atr * config.trailing_stop_multiplier
                 new_trail = current_price + trail_distance
                 if self.trailing_stop is None or new_trail < self.trailing_stop:
                     self.trailing_stop = new_trail
@@ -128,8 +133,9 @@ class InstitutionalStrategy:
     Multi-factor institutional footprint strategy.
     """
     
-    def __init__(self, data_feed: DataFeed):
+    def __init__(self, data_feed: DataFeed, clock=get_et_now):
         self.data_feed = data_feed
+        self.clock = clock
         self.positions: Dict[str, Position] = {}
         self.portfolio_peak: float = 20000.0
         self.daily_peak: float = 0.0
@@ -139,6 +145,9 @@ class InstitutionalStrategy:
         try:
             bars = self.data_feed.get_bars_yfinance(symbol, days=1)
             if bars is None or bars.empty:
+                return None
+            bars = bars.loc[bars.index.date == self.clock().date()]
+            if bars.empty:
                 return None
             typical_price = (bars['High'] + bars['Low'] + bars['Close']) / 3
             vwap = (typical_price * bars['Volume']).sum() / bars['Volume'].sum()
@@ -158,6 +167,9 @@ class InstitutionalStrategy:
             if not vwap:
                 return None
             
+            bars = bars.loc[bars.index.date == self.clock().date()]
+            if bars.empty:
+                return None
             typical_price = (bars['High'] + bars['Low'] + bars['Close']) / 3
             variance = ((typical_price - vwap) ** 2 * bars['Volume']).sum() / bars['Volume'].sum()
             std_dev = np.sqrt(variance)
@@ -179,7 +191,8 @@ class InstitutionalStrategy:
             if bars is None or bars.empty:
                 return None
             
-            or_bars = bars.between_time('09:30', '09:45')
+            bars = bars.loc[bars.index.date == self.clock().date()]
+            or_bars = bars.between_time('09:30', '09:45', inclusive='left')
             if or_bars.empty:
                 return None
             
@@ -200,7 +213,7 @@ class InstitutionalStrategy:
     
     def is_execution_window(self) -> bool:
         """Check if current time is in institutional execution window."""
-        now = get_et_time()
+        now = self.clock().time()
         # Morning window: 9:45-11:00 AM ET
         morning = config.morning_window_start <= now <= config.morning_window_end
         # Afternoon window: 2:00-3:30 PM ET
@@ -266,7 +279,7 @@ class InstitutionalStrategy:
                     score -= 1  # Penalty for choppy market
             
             # ─── Minimum Score Gate ─────────────────────────────────
-            if score < config.min_score_to_trade:
+            if direction is None or score < config.min_score_to_trade:
                 return None
             
             # ─── Calculate Stop/Target ──────────────────────────────
@@ -274,11 +287,13 @@ class InstitutionalStrategy:
             stop_distance = atr * config.atr_stop_multiplier
             
             if direction == SignalDirection.LONG:
-                stop = price - stop_distance
-                target = price + (stop_distance * config.rr_ratio)
+                price = round(price, 2)
+                stop = round(price - stop_distance, 2)
+                target = round(price + (price - stop) * config.rr_ratio, 2)
             else:
-                stop = price + stop_distance
-                target = price - (stop_distance * config.rr_ratio)
+                price = round(price, 2)
+                stop = round(price + stop_distance, 2)
+                target = round(price - (stop - price) * config.rr_ratio, 2)
             
             return Signal(
                 symbol=symbol,
@@ -327,7 +342,8 @@ class InstitutionalStrategy:
             return None
         
         position = self.positions[symbol]
-        position.update_trailing_stop(current_price)
+        atr = self.data_feed.get_atr(symbol, config.atr_length) or current_price * 0.005
+        position.update_trailing_stop(current_price, atr)
         
         should_exit, reason = position.should_exit(current_price)
         if should_exit:
