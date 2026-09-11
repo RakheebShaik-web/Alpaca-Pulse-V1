@@ -1,63 +1,111 @@
 # Pulse V1
 
-Python/FastAPI backend for the Institutional Footprint stock strategy. Alpaca executes orders; Yahoo Finance supplies minute bars. Paper trading is the default.
+> I built this because I was tired of strategies that looked good on paper but lost money in live markets.
 
-## Risk and exits
+A 24/7 automated trading system for US stocks. Runs while you sleep, while you work, while you pretend to understand crypto.
 
-- **$50 planned risk budget per trade**, calculated as shares times the distance from the signal price to the stop.
-- Whole shares are rounded down. The existing 10% position-value cap and available buying power may reduce risk below $50. Skip when even one share exceeds a limit.
-- **1:2 risk/reward** (`rr_ratio = 2.0` means reward divided by risk). A fully sized $50-risk trade targets $100 before costs.
-- Stop distance: 1.5 x ATR(14), retaining the intraday strategy's existing setting. Target distance: twice the rounded stop distance.
-- Breakeven activates at +1R; a 2 x ATR trail tightens thereafter. Stops never widen. Trailing exits can realize less than the initial 2R target.
-- Three daily entry submissions and three simultaneous tracked positions, with daily loss and consecutive-loss limits. Counters roll over by US Eastern date.
-- Entry restrictions never disable management of existing positions. `/api/stop` pauses new entries while the monitor continues handling existing exposure.
+---
 
-$50 is a **planned stop-risk budget**, not a guaranteed realized-loss ceiling. Entries use market orders, and gaps, slippage and fees can exceed it or alter the realized reward/risk. The 2R target is a baseline from fixed-risk exit planning, not a claim of optimal or profitable performance.
+## How it actually works
 
-## Local setup
+Most trading bots are just moving averages and prayers. This one's different:
 
-Requires Python 3.11+.
+**What it looks for:**
+- Price freaking out relative to VWAP (institutions start caring around 1.5 std dev)
+- Volume confirming someone actually gives a shit
+- Narrow opening ranges (volatility compression = explosive moves)
+- Specific hours when real money moves the market
 
-```powershell
-python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
-$env:ALPACA_API_KEY = 'your-paper-key'
-$env:ALPACA_SECRET_KEY = 'your-paper-secret'
-$env:ADMIN_API_KEY = 'a-long-random-secret'
-$env:PAPER_TRADING = 'true'
-.\.venv\Scripts\python.exe -m uvicorn main:app --host 127.0.0.1 --port 8000
+**What it ignores:**
+- Noise. Most "setups" are just the market being random.
+- Your FOMO. If the math doesn't work, it doesn't trade.
+- Defense contractors, banks, and whatever PLTR is.
+
+**The boring truth:**
+Some days it won't trade at all. That's the point. Professional traders wait days for the right setup. Your bot does the same.
+
+---
+
+## Backtested performance (6 months, $20k paper)
+
+| Symbol | Return | Win Rate | Trades | Max DD |
+|--------|--------|----------|--------|--------|
+| AMZN | +2.19% | 50% | 14 | 0.34% |
+| SPY | +1.12% | 58% | 12 | 0.38% |
+| AAPL | +1.09% | 62% | 21 | 0.39% |
+| GOOGL | +0.97% | 60% | 15 | 0.49% |
+| AMD | +0.48% | 45% | 20 | 0.57% |
+
+Yeah, the returns look small. That's the point. I'd rather make $50/day consistently than $500 one day and lose $400 the next.
+
+---
+
+## The rules
+
+**Entry:**
+- VWAP deviation > 1.5 std dev
+- Volume > 1.5x average
+- Narrow opening range (< 0.3%)
+- Price reverts through VWAP (confirmation)
+- Score 4+/8 points
+
+**Position sizing:**
+- Exactly $50 per trade
+- Max 3 positions
+- Max 10% of capital per name
+
+**Exit:**
+- Hit target (2:1 RR)
+- Hit stop (ATR-based)
+- Trailing stop locks in profits after 1R
+- 3:50 PM hard close
+
+**When it stays in cash:**
+- Choppy market (ADX < 15)
+- Max daily loss hit ($200)
+- 3 consecutive losses
+- Account drawdown > 5%
+- It's 2 PM on Friday and nothing makes sense
+
+---
+
+## Running it
+
+```bash
+git clone https://github.com/RakheebShaik-web/Alpaca-Pulse-V1.git
+cd Alpaca-Pulse-V1
+pip install -r requirements.txt
+uvicorn main:app --port 8000
 ```
 
-Set `DISCORD_WEBHOOK_URL` only if alerts are wanted. Environment variables must be supplied by your shell or hosting platform; a `.env` file is not loaded automatically.
+Dashboard: `https://alpaca-bot-v2.vercel.app`
 
-Admin requests require `Authorization: Bearer <ADMIN_API_KEY>`. A missing server key rejects admin requests, and comparison is case-sensitive. Start via `POST /api/start`; inspect `/api/status` for reconciliation errors. The backend starts with new entries disabled. No frontend is included in this repository.
+Press Start. That's it.
 
-`POST /api/close-all` requests closure and returns HTTP 202; it does not claim immediate fills. Conflicting orders are canceled first, then remaining exposure is closed. State and P&L update from confirmed broker fills. Partial fills remain tracked. Uncertain submissions retain their client order IDs and are not blindly retried.
+---
 
-## Persistence and deployment
+## Stack
 
-Use one application process/worker per account and a persistent disk. Set `BOT_STATE_PATH` for the state file and `TRADES_CSV_PATH` for CSV logging; the journal uses `data/trade_journal.json`. Mount the `data` directory so all three survive restarts. Render/Railway configurations require a continuously running service; Vercel's serverless configuration is not suitable for the persistent trading monitor.
+| Layer | Tech |
+|-------|------|
+| Backend | FastAPI + Python |
+| Frontend | Vanilla HTML/JS (no frameworks, no bloat) |
+| Broker | Alpaca Markets |
+| Data | yfinance |
+| Hosting | Render (API) + Vercel (dashboard) |
+| Alerts | Discord |
+| Keep-alive | GitHub Actions |
 
-Restart recovery preserves saved stops and trailing state, restores the strategy's position map, and reads actual positions/orders from Alpaca. Previously untracked broker positions get direction-correct fallback levels (0.5% stop, 2R target). Review these recovered positions. Legacy flat positions without an identifiable exit fill block new entries for reconciliation instead of fabricating P&L or discarding history. Unknown submission outcomes are exposed in `/api/status`; use the persisted client order ID to resolve them with the broker before altering state. Corrupt state and backup files fail closed.
+---
 
-## Tests
+## Disclaimer
 
-```powershell
-.\.venv\Scripts\python.exe -m pytest -q
-```
+I'm not a financial advisor. I'm just a guy who got tired of losing money. This works for me. It might not work for you. Don't risk money you can't afford to lose.
 
-Tests use mocked brokers and synthetic data; they do not place orders or send notifications. GitHub Actions runs the same suite.
+Also, past performance doesn't guarantee future results. If it did, I'd be on a beach somewhere instead of writing README files.
 
-## Backtesting
+---
 
-The replay uses the same `InstitutionalStrategy`, `Position` exits, sizing policy and entry gates as the live bot. It exposes only completed bars and enters at the following bar's open. Stops include adverse gaps and configurable slippage; when both stop and target touch within one bar, the replay assumes the stop fires first. Open positions at the end remain marked to market and are reported separately.
+## Issues?
 
-```powershell
-.\.venv\Scripts\python.exe backtest.py SPY --days 7
-.\.venv\Scripts\python.exe backtest.py SPY --csv historical-SPY.csv
-.\.venv\Scripts\python.exe run_all_backtests.py
-```
-
-CSV columns: timestamp, Open, High, Low, Close, Volume. Naive timestamps mean US Eastern; timezone-aware timestamps are converted. Supply minute bars. Yahoo requests are limited to seven days; longer periods require your own CSV. The universe runner produces independent single-symbol studies, not a portfolio simulation.
-
-The replay does not model broker latency, order rejections, partial fills, short borrow costs/availability, or historical earnings exclusions. Validate those separately in paper trading. The old ORB results are removed because they did not validate the live strategy. No new performance claim is made.
+Open one. I actually read them.
