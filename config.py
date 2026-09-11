@@ -74,10 +74,13 @@ class StrategyConfig:
     afternoon_window_start: time = time(14, 0)
     afternoon_window_end: time = time(15, 30)
     
-    # ─── Universe ────────────────────────────────────────────────
+    # ─── Universe (top 20 liquid, no PLTR, no banks, no META, no defense) ───
     universe: Tuple[str, ...] = (
-        'AMZN', 'SPY', 'AAPL', 'GOOGL', 'AMD',
-        'QQQ', 'META', 'TSLA', 'MSFT',
+        'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'NVDA',
+        'TSLA', 'AMD', 'SPY', 'QQQ', 'JNJ',
+        'WMT', 'PG', 'HD', 'DIS', 'NFLX',
+        'INTC', 'CRM', 'ORCL', 'CSCO', 'RKLB',
+        'ASTS',
     )
     
     # ─── Backtest ────────────────────────────────────────────────
