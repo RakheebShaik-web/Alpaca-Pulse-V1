@@ -129,15 +129,20 @@ async def get_status(_=Depends(require_admin_key)):
     if system.start_time:
         uptime = (datetime.utcnow() - system.start_time).total_seconds()
     
+    # Pull real data from Alpaca
+    account = system.trader.get_account() if system.trader else None
+    equity = float(account.get('equity', 0)) if account else 0
+    last_equity = float(account.get('last_equity', equity)) if account else equity
+    
     return {
         "status": system.status,
         "mode": system.mode,
         "uptime": uptime,
-        "daily_pnl": system.state.daily_pnl,
+        "daily_pnl": round(equity - last_equity, 2),
         "total_trades": system.state.trades_today,
         "active_positions": len(system.state.all_positions()),
-        "portfolio_value": system.get_portfolio_value(),
-        "buying_power": system.get_buying_power(),
+        "portfolio_value": round(equity, 2),
+        "buying_power": round(float(account.get('buying_power', 0)), 2) if account else 0,
         "reconciliation_error": runtime.error,
         "last_scan_at": runtime.last_scan_at,
         "last_scan_error": runtime.last_scan_error,

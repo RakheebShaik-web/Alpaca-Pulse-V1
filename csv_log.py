@@ -135,36 +135,34 @@ def get_open_trades() -> list:
 
 
 def get_trade_summary() -> dict:
-    """Get summary statistics from trade log."""
+    """Get summary statistics — pulls realized PnL from Alpaca."""
     try:
-        csv_path = Path(CSV_PATH)
-        if not csv_path.exists():
+        from main import system
+        if not system.trader:
             return {"total_trades": 0, "wins": 0, "losses": 0, "total_pnl": 0.0}
         
-        total_trades = 0
-        wins = 0
-        losses = 0
-        total_pnl = 0.0
-        
-        with open(csv_path, "r") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                if row.get("status") == "closed":
-                    total_trades += 1
-                    pnl = float(row.get("pnl", 0))
-                    total_pnl += pnl
-                    if pnl > 0:
-                        wins += 1
-                    else:
-                        losses += 1
-        
-        return {
-            "total_trades": total_trades,
-            "wins": wins,
-            "losses": losses,
-            "total_pnl": total_pnl,
-            "win_rate": (wins / total_trades * 100) if total_trades > 0 else 0,
-        }
+        account = system.trader.get_account()
+        if account:
+            equity = float(account.get('equity', 0))
+            last_equity = float(account.get('last_equity', equity))
+            realized_pnl = equity - last_equity
+            
+            # Count trades from Alpaca history
+            orders = system.trader.get_orders(status="closed")
+            filled_orders = [o for o in orders if o.get('filled_qty', 0) > 0]
+            
+            # Rough estimate: each pair of fills = 1 round-trip trade
+            total_trades = len(filled_orders) // 2 if filled_orders else 0
+            
+            return {
+                "total_trades": total_trades,
+                "wins": 0,  # Would need per-trade calculation from Alpaca
+                "losses": 0,
+                "total_pnl": round(realized_pnl, 2),
+                "equity": round(equity, 2),
+                "last_equity": round(last_equity, 2),
+            }
     except Exception as e:
-        logger.error(f"Failed to get trade summary: {e}")
-        return {"total_trades": 0, "wins": 0, "losses": 0, "total_pnl": 0.0}
+        logger.error(f"Failed to get Alpaca summary: {e}")
+    
+    return {"total_trades": 0, "wins": 0, "losses": 0, "total_pnl": 0.0}
