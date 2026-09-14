@@ -278,13 +278,12 @@ class InstitutionalStrategy:
                 elif direction == SignalDirection.SHORT and previous > price:
                     score += 2
             
-            # Factor 6: ADX trend filter
-            if config.regime_filter and adx:
-                if adx >= config.adx_trend_threshold:
-                    score += 1  # Bonus for trending market
-                elif adx < 15:
-                    score -= 1  # Penalty for choppy market
-            
+            # Factor 6: ADX trend filter (BLOCK choppy markets)
+            if config.regime_filter:
+                if adx is None or adx < config.adx_trend_threshold:
+                    return None  # Don't trade choppy/unknown markets
+                score += 1  # Bonus for confirmed trending market
+
             # ─── Minimum Score Gate ─────────────────────────────────
             if direction is None or score < config.min_score_to_trade:
                 return None
