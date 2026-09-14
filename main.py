@@ -257,7 +257,8 @@ def create_system():
     trader = AlpacaTrader()
     data_feed = DataFeed(trader)
     strategy = InstitutionalStrategy(trader, data_feed)
-    discord_notifier = DiscordNotifier()
+    webhook_url = os.environ.get("DISCORD_WEBHOOK_URL", "") or config.discord_webhook_url
+    discord_notifier = DiscordNotifier(webhook_url)
     
     state = load_state()
     
