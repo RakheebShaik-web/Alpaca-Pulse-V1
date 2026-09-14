@@ -63,6 +63,14 @@ class BotState:
     last_trade_at: Optional[str] = None
     last_sl_at: Optional[str] = None
     positions: Dict[str, List[TradePosition]] = field(default_factory=dict)
+    # Trade event tracking
+    tp1_hits: int = 0
+    tp2_hits: int = 0
+    sl_hits: int = 0
+    tp1_pnl: float = 0.0
+    tp2_pnl: float = 0.0
+    sl_pnl: float = 0.0
+    trade_events: List[dict] = field(default_factory=list)
     
     def all_positions(self) -> List[TradePosition]:
         all_pos = []
