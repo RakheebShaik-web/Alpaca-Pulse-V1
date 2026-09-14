@@ -39,9 +39,16 @@ app.add_middleware(
 system = None
 
 
+ADMIN_KEY = os.environ.get("ADMIN_API_KEY", "")
+
+
 def check_admin(x_admin_api_key: str = Header(default="")):
-    """Check admin API key. Disabled for now."""
-    return True  # TODO: Re-enable when admin key is configured
+    """Check admin API key."""
+    if not ADMIN_KEY:
+        return True
+    if x_admin_api_key != ADMIN_KEY:
+        raise HTTPException(status_code=401, detail="Invalid key")
+    return True
 
 
 @app.get("/")
