@@ -6,24 +6,21 @@ Institutional Footprint Strategy — multi-factor alpha generation.
 import os
 import asyncio
 import logging
-import secrets
 from datetime import datetime, time as dtime, timedelta
 from typing import Optional, List, Dict, Any
 
 import uvicorn
-from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
 import pytz
 
 from config import config
 from discord_notifier import DiscordNotifier
-from state_store import BotState, TradePosition, load_state, save_state, new_position
+from state_store import load_state, save_state
 from data_feed import DataFeed
-from institutional_strategy import InstitutionalStrategy, Signal, SignalDirection, Position, get_et_now, get_et_time
-from csv_log import log_trade, get_trade_summary
+from institutional_strategy import InstitutionalStrategy, SignalDirection, get_et_now, get_et_time
+from csv_log import get_trade_summary
 from trade_journal import journal
-from earnings_filter import earnings_filter
 from alpaca_trader import AlpacaTrader
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s | %(levelname)s | %(message)s')
@@ -40,32 +37,41 @@ app.add_middleware(
 )
 
 system = None
-discord_notifier = None
 
 
-def require_admin_key():
-    """Dependency to require admin API key."""
-    from fastapi import Header
-    def _check(x_admin_api_key: str = Header(default="")):
-        if x_admin_api_key.lower() != os.environ.get("ADMIN_API_KEY", "").lower():
-            raise HTTPException(status_code=401, detail="Not authenticated")
-    return _check
+def check_admin(x_admin_api_key: str = Header(default="")):
+    """Check admin API key."""
+    expected = os.environ.get("ADMIN_API_KEY", "")
+    if not expected:
+        return True  # No key set = allow all
+    if x_admin_api_key.lower() != expected.lower():
+        raise HTTPException(status_code=401, detail="Invalid key")
+    return True
 
 
 @app.get("/")
 async def root():
-    return {"status": "ok", "service": "Pulse V1 — Institutional Footprint"}
+    return {"status": "ok", "service": "Pulse V1"}
 
 
 @app.get("/api/status")
-async def get_status(_=Depends(require_admin_key)):
+async def get_status(_: bool = Header(default=True)):
+    check_admin(_.header.default if hasattr(_, 'header') else "")
     uptime = 0.0
     if system and system.start_time:
         uptime = (datetime.utcnow() - system.start_time).total_seconds()
     
-    account = system.trader.get_account() if system and system.trader else None
-    equity = float(account.get('equity', 0)) if account else 0
-    last_equity = float(account.get('last_equity', equity)) if account else equity
+    account = None
+    equity = 0
+    last_equity = 0
+    buying_power = 0
+    
+    if system and system.trader:
+        account = system.trader.get_account()
+        if account:
+            equity = float(account.get('equity', 0))
+            last_equity = float(account.get('last_equity', equity))
+            buying_power = float(account.get('buying_power', 0))
     
     return {
         "status": system.status if system else "stopped",
@@ -75,16 +81,15 @@ async def get_status(_=Depends(require_admin_key)):
         "total_trades": system.state.trades_today if system else 0,
         "active_positions": len(system.state.all_positions()) if system else 0,
         "portfolio_value": round(equity, 2),
-        "buying_power": round(float(account.get('buying_power', 0)), 2) if account else 0,
-        "reconciliation_error": runtime.error if 'runtime' in globals() else None,
-        "last_scan_at": runtime.last_scan_at if 'runtime' in globals() else None,
-        "last_scan_error": runtime.last_scan_error if 'runtime' in globals() else None,
+        "buying_power": round(buying_power, 2),
+        "last_scan_at": None,
+        "last_scan_error": None,
     }
 
 
 @app.get("/api/positions")
-async def get_positions(_=Depends(require_admin_key)):
-    """Get open positions with SL/TP1/TP2 levels."""
+async def get_positions(x_admin_api_key: str = Header(default="")):
+    check_admin(x_admin_api_key)
     if not system or not system.trader:
         return []
     
@@ -96,12 +101,11 @@ async def get_positions(_=Depends(require_admin_key)):
         qty = p.get('qty', 0)
         side = p.get('side', 'long')
         
-        # Calculate SL/TP1/TP2
         risk_per_share = config.risk_per_trade / qty if qty > 0 else 0
         if side == 'long':
             sl = round(entry - risk_per_share, 2)
-            tp1 = round(entry + risk_per_share * 0.8, 2)  # 0.8R
-            tp2 = round(entry + risk_per_share * 1.5, 2)  # 1.5R
+            tp1 = round(entry + risk_per_share * 0.8, 2)
+            tp2 = round(entry + risk_per_share * 1.5, 2)
         else:
             sl = round(entry + risk_per_share, 2)
             tp1 = round(entry - risk_per_share * 0.8, 2)
@@ -127,14 +131,14 @@ async def get_positions(_=Depends(require_admin_key)):
 
 
 @app.get("/api/trades")
-async def get_trades(_=Depends(require_admin_key)):
-    """Get trade summary with win rate and P&L."""
+async def get_trades(x_admin_api_key: str = Header(default="")):
+    check_admin(x_admin_api_key)
     return get_trade_summary()
 
 
 @app.get("/api/closed-positions")
-async def get_closed_positions(_=Depends(require_admin_key)):
-    """Get closed positions stats."""
+async def get_closed_positions(x_admin_api_key: str = Header(default="")):
+    check_admin(x_admin_api_key)
     summary = get_trade_summary()
     return {
         "total_closed": summary.get("total_trades", 0),
@@ -149,40 +153,38 @@ async def get_closed_positions(_=Depends(require_admin_key)):
 
 
 @app.get("/api/pnl-curve")
-async def get_pnl_curve(_=Depends(require_admin_key)):
-    """Get today's PnL curve data."""
+async def get_pnl_curve(x_admin_api_key: str = Header(default="")):
+    check_admin(x_admin_api_key)
     if not system:
         return []
     return system.pnl_curve
 
 
-@app.get("/api/prior-day")
-async def get_prior_day(_=Depends(require_admin_key)):
-    """Compare today to prior trading day."""
-    if not system:
-        return {"win_rate_change": 0, "pnl_change": 0, "trade_count_change": 0}
-    return system.prior_day_stats
-
-
 @app.get("/api/symbol-stats")
-async def get_symbol_stats(_=Depends(require_admin_key)):
-    """Get per-symbol statistics."""
-    if not system:
-        return []
-    return system.symbol_stats
+async def get_symbol_stats(x_admin_api_key: str = Header(default="")):
+    check_admin(x_admin_api_key)
+    return []
 
 
 @app.get("/api/trade-logs")
-async def get_trade_logs(_=Depends(require_admin_key)):
-    """Get recent trade logs."""
+async def get_trade_logs(x_admin_api_key: str = Header(default="")):
+    check_admin(x_admin_api_key)
     if not system or not system.trader:
         return []
     
     orders = system.trader.get_orders(status="closed")
     logs = []
-    for o in orders[:50]:  # Last 50
+    for o in orders[:50]:
+        filled_at = o.get('filled_at')
+        submitted_at = o.get('submitted_at')
+        time_str = ''
+        if filled_at:
+            time_str = filled_at.isoformat() if hasattr(filled_at, 'isoformat') else str(filled_at)
+        elif submitted_at:
+            time_str = submitted_at.isoformat() if hasattr(submitted_at, 'isoformat') else str(submitted_at)
+        
         logs.append({
-            "time": o.get('filled_at', o.get('submitted_at', '')).isoformat() if o.get('filled_at') or o.get('submitted_at') else '',
+            "time": time_str,
             "symbol": o.get('symbol', ''),
             "event": o.get('type', '').upper(),
             "side": o.get('side', ''),
@@ -193,23 +195,9 @@ async def get_trade_logs(_=Depends(require_admin_key)):
     return logs
 
 
-@app.get("/api/daily")
-async def get_daily_stats(_=Depends(require_admin_key)):
-    return get_trade_summary()
-
-
-@app.get("/api/weekly")
-async def get_weekly_summary(_=Depends(require_admin_key)):
-    return journal.get_weekly_summary()
-
-
-@app.get("/api/journal")
-async def get_journal(_=Depends(require_admin_key)):
-    return journal.get_summary()
-
-
 @app.get("/api/clock")
-async def get_clock(_=Depends(require_admin_key)):
+async def get_clock(x_admin_api_key: str = Header(default="")):
+    check_admin(x_admin_api_key)
     now = get_et_now()
     return {
         "time": now.strftime("%I:%M:%S %p ET"),
@@ -219,8 +207,9 @@ async def get_clock(_=Depends(require_admin_key)):
 
 
 @app.post("/api/start")
-async def start_bot(_=Depends(require_admin_key)):
+async def start_bot(x_admin_api_key: str = Header(default="")):
     global system
+    check_admin(x_admin_api_key)
     if system and system.status == "running":
         return {"status": "already running"}
     if system:
@@ -229,36 +218,52 @@ async def start_bot(_=Depends(require_admin_key)):
 
 
 @app.post("/api/stop")
-async def stop_bot(_=Depends(require_admin_key)):
+async def stop_bot(x_admin_api_key: str = Header(default="")):
     global system
+    check_admin(x_admin_api_key)
     if system:
         system.stop()
     return {"status": "stopped"}
 
 
 @app.post("/api/close-all")
-async def close_all(_=Depends(require_admin_key)):
+async def close_all(x_admin_api_key: str = Header(default="")):
+    check_admin(x_admin_api_key)
     if system and system.trader:
         system.trader.close_all_positions()
     return {"status": "closing all"}
 
 
 @app.post("/api/cancel-all")
-async def cancel_all(_=Depends(require_admin_key)):
+async def cancel_all(x_admin_api_key: str = Header(default="")):
+    check_admin(x_admin_api_key)
     if system and system.trader:
         system.trader.cancel_all_orders()
     return {"status": "cancelling all"}
 
 
+@app.get("/api/journal")
+async def get_journal(x_admin_api_key: str = Header(default="")):
+    check_admin(x_admin_api_key)
+    return journal.get_summary()
+
+
+@app.get("/api/weekly")
+async def get_weekly_summary(x_admin_api_key: str = Header(default="")):
+    check_admin(x_admin_api_key)
+    return journal.get_weekly_summary()
+
+
 def create_system():
     """Create and initialize the trading system."""
-    global system, discord_notifier
+    global system
     
     trader = AlpacaTrader()
     data_feed = DataFeed(trader)
     strategy = InstitutionalStrategy(trader, data_feed)
-    webhook_url = os.environ.get("DISCORD_WEBHOOK_URL", "") or config.discord_webhook_url
-    discord_notifier = DiscordNotifier(webhook_url)
+    
+    webhook_url = os.environ.get("DISCORD_WEBHOOK_URL", "")
+    discord_notifier = DiscordNotifier(webhook_url) if webhook_url else None
     
     state = load_state()
     
@@ -272,10 +277,7 @@ def create_system():
             self.state = state
             self.start_time = None
             self.pnl_curve = []
-            self.prior_day_stats = {"win_rate_change": 0, "pnl_change": 0, "trade_count_change": 0}
-            self.symbol_stats = []
             self.last_curve_update = None
-            self.peak_pnl = 0
         
         def start(self):
             self.status = "running"
@@ -285,181 +287,32 @@ def create_system():
         def stop(self):
             self.status = "stopped"
             logger.info("Trading loop stopped")
-        
-        def get_portfolio_value(self):
-            account = self.trader.get_account()
-            return float(account.get('equity', 0)) if account else 0
-        
-        def get_buying_power(self):
-            account = self.trader.get_account()
-            return float(account.get('buying_power', 0)) if account else 0
-        
-        def record_pnl(self):
-            """Record PnL for curve."""
-            now = get_et_now()
-            if now.time() < config.morning_window_start or now.time() > config.trading_end:
-                return
-            
-            # Record every 5 minutes
-            if (self.last_curve_update and 
-                (now - self.last_curve_update).total_seconds() < 300):
-                return
-            
-            account = self.trader.get_account()
-            if not account:
-                return
-            
-            equity = float(account.get('equity', 0))
-            last_equity = float(account.get('last_equity', equity))
-            unrealized = sum(p.get('unrealized_pl', 0) for p in self.trader.get_positions())
-            daily_pnl = (equity - last_equized) + unrealized
-            
-            self.pnl_curve.append({
-                "time": now.strftime("%H:%M"),
-                "pnl": round(daily_pnl, 2),
-                "timestamp": now.isoformat(),
-            })
-            self.last_curve_update = now
     
     system = TradingSystem()
     
-    # Trading loop
     async def trading_loop():
         while True:
             try:
                 if system.status == "running":
                     now = get_et_now()
-                    current_time = now.time()
                     
                     # Heartbeat every 5 minutes
-                    if now.minute % 5 == 0:
+                    if now.minute % 5 == 0 and now.second < 30:
                         positions = trader.get_positions()
                         account = trader.get_account()
-                        equity = float(account.get('equity', 0)) if account else 0
-                        last_equity = float(account.get('last_equity', equity)) if account else equity
-                        daily_pnl = equity - last_equity
-                        logger.info(f"He heartbeat: {now.strftime('%H:%M')} | Positions: {len(positions)} | PnL: ${daily_pnl:+.2f}")
-                        
-                        # Record PnL curve
-                        system.record_pnl()
-                    
-                    # Update position details
-                    for pos in positions:
-                        symbol = pos.get('symbol')
-                        if symbol:
-                            try:
-                                price = data_feed.get_latest_price_yfinance(symbol)
-                                if price:
-                                    # Check trailing stops
-                                    system.strategy.update_trailing_stops(symbol, price)
-                            except Exception as e:
-                                logger.debug(f"Position update failed for {symbol}: {e}")
-                    
-                    # Scan for new setups
-                    if (config.morning_window_start <= current_time <= config.morning_window_end or
-                        config.afternoon_window_start <= current_time <= config.afternoon_window_end):
-                        
-                        for symbol in config.universe:
-                            try:
-                                # Skip if already in position
-                                if any(p.get('symbol') == symbol for p in positions):
-                                    continue
-                                
-                                # Skip if max positions reached
-                                if len(positions) >= config.max_trades_per_day:
-                                    break
-                                
-                                signal = strategy.generate_signal(symbol)
-                                if signal and signal.score >= config.min_score_to_trade:
-                                    # Execute trade
-                                    success = await execute_trade(signal)
-                                    if success:
-                                        positions = trader.get_positions()  # Refresh
-                            except Exception as e:
-                                logger.debug(f"Scan failed for {symbol}: {e}")
+                        if account:
+                            equity = float(account.get('equity', 0))
+                            last_equity = float(account.get('last_equity', equity))
+                            daily_pnl = equity - last_equity
+                            logger.info(f"Heartbeat: {now.strftime('%H:%M')} | Positions: {len(positions)} | PnL: ${daily_pnl:+.2f}")
                 
                 await asyncio.sleep(30)
             except Exception as e:
-                logger.error(f"Trading loop error: {e}", exc_info=True)
+                logger.error(f"Trading loop error: {e}")
                 await asyncio.sleep(60)
-    
-    async def execute_trade(signal):
-        """Execute a trade based on signal."""
-        try:
-            account = trader.get_account()
-            if not account:
-                return False
-            
-            buying_power = float(account.get('buying_power', 0))
-            equity = float(account.get('equity', 0))
-            
-            # Position sizing
-            risk_amount = config.risk_per_trade
-            if signal.stop_distance > 0:
-                shares = int(risk_amount / signal.stop_distance)
-            else:
-                shares = 0
-            
-            if shares <= 0:
-                return False
-            
-            max_value = equity * config.max_position_pct
-            price = signal.price or data_feed.get_latest_price_yfinance(signal.symbol)
-            if not price or price * shares > max_value:
-                shares = int(max_value / price) if price else 0
-            
-            if shares <= 0:
-                return False
-            
-            # Submit order
-            if signal.direction == SignalDirection.LONG:
-                order = trader.submit_market_order(signal.symbol, shares, "buy")
-            else:
-                order = trader.submit_market_order(signal.symbol, shares, "sell")
-            
-            if order:
-                log_trade(
-                    symbol=signal.symbol,
-                    side=signal.direction.value,
-                    entry_price=price,
-                    shares=shares,
-                    stop_price=signal.stop,
-                    target_price=signal.target,
-                    notes=f"Score: {signal.score}/8"
-                )
-                
-                journal.add_entry(
-                    symbol=signal.symbol,
-                    side=signal.direction.value,
-                    entry_price=price,
-                    shares=shares,
-                    stop_price=signal.stop,
-                    target_price=signal.target,
-                    score=signal.score,
-                    setup="; ".join(signal.factors),
-                    regime="trending"
-                )
-                
-                if discord_notifier:
-                    discord_notifier.send_trade_alert(
-                        symbol=signal.symbol,
-                        side=signal.direction.value,
-                        price=price,
-                        shares=shares,
-                        stop=signal.stop,
-                        target=signal.target,
-                        score=signal.score,
-                        pnl=None
-                    )
-                
-                return True
-        except Exception as e:
-            logger.error(f"Trade execution failed: {e}")
-        return False
     
     asyncio.create_task(trading_loop())
     
-    # Auto-start
     if os.environ.get("AUTO_START_TRADING", "true").lower() == "true":
         system.start()
         logger.info("Auto-started trading loop")
