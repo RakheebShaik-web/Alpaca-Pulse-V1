@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 
 import main
 import state_store
-from alpaca_trader import AlpacaTrader
+from alpaca_trader import AlpacaTrader, OrderRejected
 from backtest import ReplayFeed, replay
 from config import config
 from institutional_strategy import InstitutionalStrategy, Position, Signal, SignalDirection
@@ -107,6 +107,14 @@ def test_entry_direction_and_intent_saved_before_submit(runtime, direction, expe
     runtime.submit_entry(signal(direction), 20000, 20000)
     assert runtime.state.trades_today == 1
     assert not runtime.state.all_positions()[0].entry_confirmed
+
+
+def test_definitive_entry_rejection_releases_slot(runtime):
+    runtime.system.trader.submit_bracket_order.side_effect = OrderRejected('invalid order')
+    with pytest.raises(OrderRejected):
+        runtime.submit_entry(signal(), 20000, 20000)
+    assert runtime.state.trades_today == 0
+    assert runtime.state.all_positions() == []
 
 
 @pytest.mark.parametrize('side', [OrderSide.BUY, OrderSide.SELL])
@@ -266,6 +274,23 @@ def test_replay_never_exposes_future_bars():
     feed.now = data.index[10]
     visible = feed.get_bars_yfinance('SPY')
     assert len(visible) == 10 and visible.index[-1] == data.index[9]
+
+
+def test_yfinance_request_includes_current_day_and_is_cached(monkeypatch):
+    from data_feed import DataFeed
+    calls = []
+    frame = bars().tz_localize('America/New_York')
+    ticker = Mock()
+    ticker.history.side_effect = lambda **kwargs: calls.append(kwargs) or frame
+    monkeypatch.setattr('data_feed.yf.Ticker', lambda symbol: ticker)
+    feed = DataFeed(Mock())
+    first = feed.get_bars_yfinance('SPY', 1)
+    second = feed.get_bars_yfinance('SPY', 1)
+    assert first is second and len(calls) == 1
+    assert pd.Timestamp(calls[0]['end']).date() > datetime.now().date()
+    feed.begin_cycle()
+    feed.get_bars_yfinance('SPY', 1)
+    assert len(calls) == 2
 
 
 def test_signal_has_two_r_target_and_no_directionless_trade():

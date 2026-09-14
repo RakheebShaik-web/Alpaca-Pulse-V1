@@ -9,6 +9,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from config import config
+from alpaca_trader import OrderRejected
 from institutional_strategy import SignalDirection
 from models import OrderSide
 from risk_policy import entries_allowed, position_size, reset_session
@@ -26,6 +27,9 @@ class TradingRuntime:
         self.ready = False
         self.close_requested = False
         self.error = None
+        self.last_scan = []
+        self.last_scan_at = None
+        self.last_scan_error = None
 
     @property
     def state(self):
@@ -206,10 +210,15 @@ class TradingRuntime:
             raise RuntimeError(f'{p.symbol}: close quantity mismatch')
         p.exit_client_id = 'pulse-exit-' + uuid.uuid4().hex
         self.persist()
-        result = trader.submit_market_order(
-            p.symbol, p.shares_remaining,
-            OrderSide.SELL if p.side == 'long' else OrderSide.BUY,
-            client_order_id=p.exit_client_id)
+        try:
+            result = trader.submit_market_order(
+                p.symbol, p.shares_remaining,
+                OrderSide.SELL if p.side == 'long' else OrderSide.BUY,
+                client_order_id=p.exit_client_id)
+        except OrderRejected:
+            p.exit_client_id = None
+            self.persist()
+            raise
         if result:
             p.exit_order_ids.append(result['id'])
         self.persist()
@@ -254,15 +263,23 @@ class TradingRuntime:
         # Reserve a daily slot before the request, including uncertain outcomes.
         self.state.trades_today += 1
         self.persist()
-        result = self.system.trader.submit_bracket_order(
-            signal.symbol, qty, side, signal.stop, signal.target,
-            client_order_id=p.entry_client_id)
+        try:
+            result = self.system.trader.submit_bracket_order(
+                signal.symbol, qty, side, signal.stop, signal.target,
+                client_order_id=p.entry_client_id)
+        except OrderRejected:
+            self.state.remove_position(p.position_id)
+            self.state.trades_today = max(0, self.state.trades_today - 1)
+            self.persist()
+            self.restore_strategy()
+            raise
         if result:
             p.entry_order_id = result['id']
         self.persist()
         self.restore_strategy()
 
     def tick(self, now, allow_entries=True, skip_symbol=lambda symbol: False):
+        self.system.data_feed.begin_cycle()
         if reset_session(self.state, now):
             self.persist()
         self.reconcile()
@@ -282,7 +299,19 @@ class TradingRuntime:
         if not eligible:
             return
         buying_power = account['buying_power']
-        for signal in self.system.strategy.generate_all_signals():
+        try:
+            signals = self.system.strategy.generate_all_signals()
+            self.last_scan = [vars(signal).copy() for signal in signals]
+            for item in self.last_scan:
+                item['direction'] = item['direction'].value
+                item['timestamp'] = item['timestamp'].isoformat()
+            self.last_scan_at = now.isoformat()
+            errors = getattr(self.system.data_feed, 'errors', [])
+            self.last_scan_error = ('; '.join(errors[:5]) or None) if isinstance(errors, list) else None
+        except Exception as exc:
+            self.last_scan_error = str(exc)
+            raise
+        for signal in signals:
             if len(self.state.all_positions()) >= 3 or self.state.trades_today >= config.max_trades_per_day:
                 break
             if signal.symbol in self.state.positions or skip_symbol(signal.symbol):

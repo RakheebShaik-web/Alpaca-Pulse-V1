@@ -22,9 +22,19 @@ class DataFeed:
     
     def __init__(self, trader: AlpacaTrader):
         self.trader = trader
+        self._bars_cache = {}
+        self.errors = []
+
+    def begin_cycle(self):
+        """Clear per-cycle market-data snapshots."""
+        self._bars_cache.clear()
+        self.errors.clear()
     
     def get_bars_yfinance(self, symbol: str, days: int = 5) -> Optional[pd.DataFrame]:
         """Fetch recent price bars using yfinance."""
+        cache_key = symbol
+        if cache_key in self._bars_cache:
+            return self._bars_cache[cache_key]
         try:
             end = datetime.now()
             start = end - timedelta(days=min(days + 3, 7))
@@ -32,13 +42,16 @@ class DataFeed:
             ticker = yf.Ticker(symbol)
             df = ticker.history(
                 start=start.strftime("%Y-%m-%d"),
-                end=end.strftime("%Y-%m-%d"),
+                # yfinance's date-only end is exclusive, so include today by
+                # requesting through tomorrow.
+                end=(end + timedelta(days=1)).strftime("%Y-%m-%d"),
                 interval="1m",
                 prepost=True,
                 repair=True,
             )
             
             if df.empty:
+                self.errors.append(f"{symbol}: no completed bars returned")
                 return None
             
             # Normalize index
@@ -46,10 +59,15 @@ class DataFeed:
             df = df.sort_index()
             now = pd.Timestamp.now(tz='America/New_York').tz_localize(None)
             df = df.loc[df.index + pd.Timedelta(minutes=1) <= now]
+            if df.empty:
+                self.errors.append(f"{symbol}: no completed bars available")
+                return None
             
+            self._bars_cache[cache_key] = df
             return df
         except Exception as e:
             logger.error(f"Failed to get bars for {symbol}: {e}")
+            self.errors.append(f"{symbol}: {e}")
             return None
     
     def get_latest_price(self, symbol: str) -> Optional[float]:

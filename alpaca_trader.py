@@ -29,6 +29,10 @@ from models import FillResult, FillStatus, OrderSide as SignalSide
 logger = logging.getLogger(__name__)
 
 
+class OrderRejected(RuntimeError):
+    """The broker definitively rejected an order request."""
+
+
 class AlpacaTrader:
     """Execute trades via Alpaca API."""
     
@@ -217,6 +221,11 @@ class AlpacaTrader:
                 'status': order.status.value,
                 'submitted_at': order.submitted_at,
             }
+        except APIError as e:
+            logger.error(f"Market order rejected: {symbol} {side.value} x{qty}: {e}")
+            if 400 <= getattr(e, 'status_code', 0) < 500:
+                raise OrderRejected(str(e)) from e
+            return None
         except Exception as e:
             logger.error(f"Market order failed: {symbol} {side.value} x{qty}: {e}")
             return None
@@ -259,6 +268,11 @@ class AlpacaTrader:
                 'status': order.status.value,
                 'submitted_at': order.submitted_at,
             }
+        except APIError as e:
+            logger.error(f"Bracket order rejected: {symbol} {side.value} x{qty}: {e}")
+            if 400 <= getattr(e, 'status_code', 0) < 500:
+                raise OrderRejected(str(e)) from e
+            return None
         except Exception as e:
             logger.error(f"Bracket order failed: {symbol} {side.value} x{qty}: {e}")
             return None

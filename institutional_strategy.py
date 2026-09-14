@@ -223,6 +223,9 @@ class InstitutionalStrategy:
     def generate_signal(self, symbol: str) -> Optional[Signal]:
         """Generate a signal using multi-factor scoring."""
         try:
+            # Prime one shared snapshot used by every indicator this cycle.
+            if self.data_feed.get_bars_yfinance(symbol, days=5) is None:
+                return None
             price = self.data_feed.get_latest_price(symbol)
             if not price:
                 return None
@@ -265,11 +268,15 @@ class InstitutionalStrategy:
             if self.is_execution_window():
                 score += 1
             
-            # Factor 5: Price reverts through VWAP
-            if direction == SignalDirection.LONG and price > vwap:
-                score += 2
-            elif direction == SignalDirection.SHORT and price < vwap:
-                score += 2
+            # Factor 5: The latest completed bar is moving back toward VWAP.
+            # A same-bar VWAP crossing contradicts the deviation condition above.
+            bars = self.data_feed.get_bars_yfinance(symbol, days=1)
+            if isinstance(bars, pd.DataFrame) and len(bars) >= 2:
+                previous = float(bars['Close'].iloc[-2])
+                if direction == SignalDirection.LONG and previous < price:
+                    score += 2
+                elif direction == SignalDirection.SHORT and previous > price:
+                    score += 2
             
             # Factor 6: ADX trend filter
             if config.regime_filter and adx:

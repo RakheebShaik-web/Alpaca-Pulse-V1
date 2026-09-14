@@ -124,7 +124,7 @@ async def root():
     return {"status": "ok", "service": "Pulse V1 — Institutional Footprint"}
 
 @app.get("/api/status")
-async def get_status():
+async def get_status(_=Depends(require_admin_key)):
     uptime = 0.0
     if system.start_time:
         uptime = (datetime.utcnow() - system.start_time).total_seconds()
@@ -139,10 +139,12 @@ async def get_status():
         "portfolio_value": system.get_portfolio_value(),
         "buying_power": system.get_buying_power(),
         "reconciliation_error": runtime.error,
+        "last_scan_at": runtime.last_scan_at,
+        "last_scan_error": runtime.last_scan_error,
     }
 
 @app.get("/api/positions")
-async def get_positions():
+async def get_positions(_=Depends(require_admin_key)):
     positions = system.trader.get_positions()
     return [{
         "symbol": p['symbol'],
@@ -155,24 +157,24 @@ async def get_positions():
     } for p in positions]
 
 @app.get("/api/trades")
-async def get_trades():
+async def get_trades(_=Depends(require_admin_key)):
     return get_trade_summary()
 
 @app.get("/api/daily")
-async def get_daily_stats():
+async def get_daily_stats(_=Depends(require_admin_key)):
     return get_trade_summary()
 
 @app.get("/api/weekly")
-async def get_weekly_summary():
+async def get_weekly_summary(_=Depends(require_admin_key)):
     return journal.get_weekly_summary()
 
 @app.get("/api/journal")
-async def get_journal():
+async def get_journal(_=Depends(require_admin_key)):
     return journal.get_summary()
 
 @app.get("/api/scan")
-async def get_scan():
-    return []
+async def get_scan(_=Depends(require_admin_key)):
+    return runtime.last_scan
 
 @app.get("/api/clock")
 async def get_clock():
@@ -182,7 +184,7 @@ async def get_clock():
     return clock
 
 @app.get("/api/account")
-async def get_account():
+async def get_account(_=Depends(require_admin_key)):
     account = system.trader.get_account()
     if not account:
         raise HTTPException(status_code=500, detail="Failed to fetch account")
@@ -277,8 +279,9 @@ async def trading_loop():
     while True:
         try:
             if system.status == "running" or system.state.all_positions() or runtime.close_requested:
-                runtime.tick(get_et_now(), allow_entries=system.status == "running",
-                             skip_symbol=earnings_filter.should_skip)
+                await asyncio.to_thread(
+                    runtime.tick, get_et_now(), system.status == "running",
+                    earnings_filter.should_skip)
         except asyncio.CancelledError:
             raise
         except Exception:
