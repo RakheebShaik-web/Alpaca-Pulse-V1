@@ -151,15 +151,32 @@ async def get_status(_=Depends(require_admin_key)):
 @app.get("/api/positions")
 async def get_positions(_=Depends(require_admin_key)):
     positions = system.trader.get_positions()
-    return [{
-        "symbol": p['symbol'],
-        "side": p['side'],
-        "entry": p['entry_price'],
-        "current_price": p['current_price'],
-        "size": p['qty'],
-        "pnl": p['unrealized_pl'],
-        "pnl_pct": p['unrealized_plpc'],
-    } for p in positions]
+    result = []
+    for p in positions:
+        # Calculate additional details
+        entry = p.get('entry_price', 0)
+        current = p.get('current_price', 0)
+        qty = p.get('qty', 0)
+        side = p.get('side', 'long')
+        market_value = current * qty if current and qty else 0
+        cost_basis = entry * qty if entry and qty else 0
+        
+        # Time in trade
+        opened_at = p.get('opened_at')
+        
+        result.append({
+            "symbol": p.get('symbol'),
+            "side": side,
+            "entry": round(entry, 2),
+            "current_price": round(current, 2),
+            "size": qty,
+            "market_value": round(market_value, 2),
+            "cost_basis": round(cost_basis, 2),
+            "pnl": round(p.get('unrealized_pl', 0), 2),
+            "pnl_pct": round(p.get('unrealized_plpc', 0) * 100, 2) if p.get('unrealized_plpc') else 0,
+            "opened_at": opened_at,
+        })
+    return result
 
 @app.get("/api/trades")
 async def get_trades(_=Depends(require_admin_key)):
