@@ -255,7 +255,7 @@ def create_system():
     global system, discord_notifier
     
     trader = AlpacaTrader()
-    data_feed = DataFeed()
+    data_feed = DataFeed(trader)
     strategy = InstitutionalStrategy(trader, data_feed)
     discord_notifier = DiscordNotifier()
     
