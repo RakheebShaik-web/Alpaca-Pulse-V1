@@ -285,6 +285,21 @@ async def close_all(_=Depends(require_admin_key)):
             'error': runtime.error}
 
 
+@app.post('/api/positions/{symbol}/close', status_code=202)
+async def close_position(symbol: str, _=Depends(require_admin_key)):
+    symbol = symbol.strip().upper()
+    runtime.reconcile()
+    position = next((p for p in system.state.all_positions() if p.symbol == symbol), None)
+    if position is None:
+        raise HTTPException(status_code=404, detail='Open position not found')
+    try:
+        runtime.request_close(position, 'manual_close')
+    except Exception as exc:
+        logger.exception('Manual close failed for %s', symbol)
+        raise HTTPException(status_code=502, detail='Position close request failed') from exc
+    return {'status': 'close_requested', 'symbol': symbol, 'reason': 'manual_close'}
+
+
 @app.post('/api/cancel-all')
 async def cancel_all(_=Depends(require_admin_key)):
     system.status = 'stopped'

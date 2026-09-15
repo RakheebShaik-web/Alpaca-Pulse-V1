@@ -288,6 +288,22 @@ def test_live_dashboard_origin_passes_admin_preflight():
     assert response.headers['access-control-allow-origin'] == 'https://alpaca-bot-v2.vercel.app'
 
 
+def test_admin_can_close_one_position(monkeypatch):
+    client = TestClient(main.app)
+    monkeypatch.setenv('ADMIN_API_KEY', 'SafeKey')
+    position = record()
+    monkeypatch.setattr(main.runtime, 'reconcile', Mock())
+    monkeypatch.setattr(main.system.state, 'all_positions', Mock(return_value=[position]))
+    request_close = Mock()
+    monkeypatch.setattr(main.runtime, 'request_close', request_close)
+
+    response = client.post('/api/positions/spy/close', headers={'X-Admin-Api-Key': 'SafeKey'})
+
+    assert response.status_code == 202
+    assert response.json()['symbol'] == 'SPY'
+    request_close.assert_called_once_with(position, 'manual_close')
+
+
 def test_breakeven_only_after_one_r():
     p = Position('SPY', SignalDirection.LONG, 100, 10, 98, 104)
     p.update_trailing_stop(101, 1)
