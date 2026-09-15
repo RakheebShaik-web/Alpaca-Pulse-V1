@@ -133,7 +133,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title='Pulse V1', version='3.0.0', lifespan=lifespan)
 allowed_origins = [origin.strip() for origin in os.getenv(
     'ALLOWED_ORIGINS',
-    'https://alpaca-bot-dashboard.vercel.app,http://localhost:8765'
+    'https://alpaca-bot-v2.vercel.app,https://alpaca-bot-dashboard.vercel.app,http://localhost:8765'
 ).split(',') if origin.strip()]
 app.add_middleware(CORSMiddleware, allow_origins=allowed_origins, allow_credentials=False,
                    allow_methods=['*'], allow_headers=['*'])

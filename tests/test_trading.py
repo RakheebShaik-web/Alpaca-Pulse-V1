@@ -277,6 +277,17 @@ def test_admin_verification_supports_dashboard_header(monkeypatch):
     assert response.status_code == 200 and response.json() == {'admin': True}
 
 
+def test_live_dashboard_origin_passes_admin_preflight():
+    client = TestClient(main.app)
+    response = client.options('/api/admin/verify', headers={
+        'Origin': 'https://alpaca-bot-v2.vercel.app',
+        'Access-Control-Request-Method': 'GET',
+        'Access-Control-Request-Headers': 'x-admin-api-key',
+    })
+    assert response.status_code == 200
+    assert response.headers['access-control-allow-origin'] == 'https://alpaca-bot-v2.vercel.app'
+
+
 def test_breakeven_only_after_one_r():
     p = Position('SPY', SignalDirection.LONG, 100, 10, 98, 104)
     p.update_trailing_stop(101, 1)
