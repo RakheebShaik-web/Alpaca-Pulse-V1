@@ -131,7 +131,11 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title='Pulse V1', version='3.0.0', lifespan=lifespan)
-app.add_middleware(CORSMiddleware, allow_origins=['*'], allow_credentials=True,
+allowed_origins = [origin.strip() for origin in os.getenv(
+    'ALLOWED_ORIGINS',
+    'https://alpaca-bot-dashboard.vercel.app,http://localhost:8765'
+).split(',') if origin.strip()]
+app.add_middleware(CORSMiddleware, allow_origins=allowed_origins, allow_credentials=False,
                    allow_methods=['*'], allow_headers=['*'])
 
 
@@ -141,7 +145,7 @@ async def root():
 
 
 @app.get('/api/status')
-async def get_status(_=Depends(require_admin_key)):
+async def get_status():
     uptime = ((datetime.utcnow() - system.start_time).total_seconds()
               if system.start_time else 0.0)
     return {
@@ -157,7 +161,7 @@ async def get_status(_=Depends(require_admin_key)):
 
 
 @app.get('/api/positions')
-async def get_positions(_=Depends(require_admin_key)):
+async def get_positions():
     return [{'symbol': p['symbol'], 'side': p['side'], 'entry': p['entry_price'],
              'current_price': p['current_price'], 'size': p['qty'],
              'pnl': p['unrealized_pl'], 'pnl_pct': p['unrealized_plpc']}
@@ -166,18 +170,18 @@ async def get_positions(_=Depends(require_admin_key)):
 
 @app.get('/api/trades')
 @app.get('/api/daily')
-async def get_trades(_=Depends(require_admin_key)):
+async def get_trades():
     return get_trade_summary()
 
 
 @app.get('/api/trade-records')
-def get_trade_records(_=Depends(require_admin_key)):
+def get_trade_records():
     return {'records': get_csv_trade_records(),
             'source': 'Durable CSV trade ledger; times shown in US Eastern'}
 
 
 @app.get('/api/trade-logs')
-def get_trade_logs(_=Depends(require_admin_key)):
+def get_trade_logs():
     return [{
         'time': row.get('timestamp'), 'time_et': row.get('entry_time_et'),
         'symbol': row.get('symbol'),
@@ -189,13 +193,13 @@ def get_trade_logs(_=Depends(require_admin_key)):
 
 
 @app.get('/api/closed-positions')
-def get_closed_positions(_=Depends(require_admin_key)):
+def get_closed_positions():
     summary = get_trade_summary()
     return {'total_closed': summary.get('total_trades', 0), **summary}
 
 
 @app.get('/api/pnl-curve')
-def get_pnl_curve(_=Depends(require_admin_key)):
+def get_pnl_curve():
     total = 0.0
     curve = []
     for row in reversed(get_csv_trade_records()):
@@ -206,7 +210,7 @@ def get_pnl_curve(_=Depends(require_admin_key)):
 
 
 @app.get('/api/symbol-stats')
-def get_symbol_stats(_=Depends(require_admin_key)):
+def get_symbol_stats():
     stats = {}
     for row in get_csv_trade_records():
         if row.get('status') != 'closed':
@@ -221,17 +225,17 @@ def get_symbol_stats(_=Depends(require_admin_key)):
 
 
 @app.get('/api/weekly')
-async def get_weekly_summary(_=Depends(require_admin_key)):
+async def get_weekly_summary():
     return journal.get_weekly_summary()
 
 
 @app.get('/api/journal')
-async def get_journal(_=Depends(require_admin_key)):
+async def get_journal():
     return journal.get_summary()
 
 
 @app.get('/api/scan')
-async def get_scan(_=Depends(require_admin_key)):
+async def get_scan():
     return runtime.last_scan
 
 
@@ -241,6 +245,11 @@ async def get_clock():
     if not clock:
         raise HTTPException(status_code=500, detail='Failed to fetch clock')
     return clock
+
+
+@app.get('/api/admin/verify')
+async def verify_admin(_=Depends(require_admin_key)):
+    return {'admin': True}
 
 
 @app.post('/api/start')

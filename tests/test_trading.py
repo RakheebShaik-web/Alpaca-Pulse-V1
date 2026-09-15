@@ -258,12 +258,23 @@ def test_daily_slots_enforced_within_signal_batch(runtime):
 
 def test_auth_missing_and_case_sensitive(monkeypatch):
     client = TestClient(main.app)
+    assert client.get('/api/status').status_code == 200
+    assert client.get('/api/trade-records').status_code == 200
     monkeypatch.delenv('ADMIN_API_KEY', raising=False)
     assert client.post('/api/stop', headers={'Authorization': 'Bearer anything'}).status_code == 503
     monkeypatch.setenv('ADMIN_API_KEY', 'CaseSensitive')
     assert client.post('/api/stop', headers={'Authorization': 'Bearer casesensitive'}).status_code == 401
     assert client.post('/api/stop', headers={'Authorization': 'Bearer CaseSensitive'}).status_code == 200
     assert client.post('/api/stop').status_code in (401, 403)
+
+
+def test_admin_verification_supports_dashboard_header(monkeypatch):
+    client = TestClient(main.app)
+    monkeypatch.setenv('ADMIN_API_KEY', 'SafeKey')
+    assert client.get('/api/admin/verify').status_code in (401, 403)
+    assert client.get('/api/admin/verify', headers={'X-Admin-Api-Key': 'wrong'}).status_code == 401
+    response = client.get('/api/admin/verify', headers={'X-Admin-Api-Key': 'SafeKey'})
+    assert response.status_code == 200 and response.json() == {'admin': True}
 
 
 def test_breakeven_only_after_one_r():
