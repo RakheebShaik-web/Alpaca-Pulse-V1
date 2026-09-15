@@ -238,6 +238,7 @@ class AlpacaTrader:
         stop_price: float,
         target_price: float,
         client_order_id: Optional[str] = None,
+        entry_limit: Optional[float] = None,
     ) -> Optional[dict]:
         """Submit a bracket order (entry + stop loss + take profit)."""
         self._ensure_initialized()
@@ -247,13 +248,15 @@ class AlpacaTrader:
             order_side = OrderSide(SignalSide(side).value)
             
             # Use OrderRequest with OrderClass.BRACKET
-            order = self.trading_client.submit_order(OrderRequest(
+            request_class = LimitOrderRequest if entry_limit is not None else MarketOrderRequest
+            order = self.trading_client.submit_order(request_class(
                 symbol=symbol,
                 client_order_id=client_order_id,
                 qty=qty,
                 side=order_side,
-                type=OrderType.MARKET,
-                time_in_force=TimeInForce.GTC,
+                type=OrderType.LIMIT if entry_limit is not None else OrderType.MARKET,
+                limit_price=entry_limit,
+                time_in_force=TimeInForce.DAY,
                 order_class=OrderClass.BRACKET,
                 take_profit=TakeProfitRequest(limit_price=target_price),
                 stop_loss=StopLossRequest(stop_price=stop_price),

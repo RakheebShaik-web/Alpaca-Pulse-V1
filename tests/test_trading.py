@@ -112,6 +112,7 @@ def test_entry_direction_and_intent_saved_before_submit(runtime, direction, expe
         saved = state_store.load_state()
         assert saved.all_positions()[0].entry_client_id == kwargs['client_order_id']
         assert args[2] == expected
+        assert kwargs['entry_limit'] == 100
         return {'id': 'entry'}
     runtime.system.trader.submit_bracket_order.side_effect = submit
     runtime.submit_entry(signal(direction), 20000, 20000)
@@ -135,10 +136,24 @@ def test_actual_adapter_request_side(side):
     trader.trading_client.submit_order.return_value = SimpleNamespace(
         id='abc', symbol='SPY', side=side, qty='10', type=SimpleNamespace(value='market'),
         status=SimpleNamespace(value='accepted'), submitted_at=None)
-    assert trader.submit_bracket_order('SPY', 10, side, 98, 104)
+    assert trader.submit_bracket_order('SPY', 10, side, 98, 104, entry_limit=100)
     request = trader.trading_client.submit_order.call_args.args[0]
     assert request.side.value == side.value
-    assert request.time_in_force.value == 'gtc'
+    assert request.time_in_force.value == 'day'
+    assert request.type.value == 'limit'
+    assert request.limit_price == 100
+
+
+def test_environment_cannot_raise_risk_above_fifty(monkeypatch):
+    monkeypatch.setattr(config, 'risk_per_trade', 500)
+    assert position_size(100, 99, 100000, 100000) == 50
+
+
+def test_wrong_side_stop_is_rejected(runtime):
+    candidate = signal()
+    candidate.stop = 101
+    runtime.submit_entry(candidate, 20000, 20000)
+    runtime.system.trader.submit_bracket_order.assert_not_called()
 
 
 def test_recovery_preserves_stops_trailing_and_does_not_duplicate(runtime):

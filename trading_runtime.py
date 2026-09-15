@@ -264,6 +264,14 @@ class TradingRuntime:
                 logger.exception('Position management failed for %s', p.symbol)
 
     def submit_entry(self, signal, equity, buying_power):
+        from math import isfinite
+        if not all(isfinite(v) and v > 0 for v in (signal.price, signal.stop, signal.target)):
+            return
+        if signal.direction == SignalDirection.LONG:
+            if not signal.stop < signal.price < signal.target:
+                return
+        elif not signal.target < signal.price < signal.stop:
+            return
         side = {SignalDirection.LONG: OrderSide.BUY, SignalDirection.SHORT: OrderSide.SELL}[signal.direction]
         qty = position_size(signal.price, signal.stop, equity, buying_power)
         if qty <= 0:
@@ -278,7 +286,7 @@ class TradingRuntime:
         try:
             result = self.system.trader.submit_bracket_order(
                 signal.symbol, qty, side, signal.stop, signal.target,
-                client_order_id=p.entry_client_id)
+                client_order_id=p.entry_client_id, entry_limit=signal.price)
         except OrderRejected:
             self.state.remove_position(p.position_id)
             self.state.trades_today = max(0, self.state.trades_today - 1)
