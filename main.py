@@ -185,8 +185,10 @@ def get_trade_logs():
     records = get_csv_trade_records()
     if not records:
         eastern = __import__('zoneinfo').ZoneInfo('America/New_York')
-        recovered = []
-        for order in system.trader.get_orders(status='closed'):
+        recovered, positions = [], {}
+        orders = sorted(system.trader.get_orders(status='closed'),
+                        key=lambda order: str(order.get('filled_at') or ''))
+        for order in orders:
             if not order.get('filled_qty') or not order.get('filled_avg_price'):
                 continue
             filled_at = order.get('filled_at')
@@ -197,12 +199,24 @@ def get_trade_logs():
             else:
                 time_et = ''
             order_type = (order.get('type') or '').lower()
+            symbol, side = order.get('symbol'), order.get('side')
+            qty, price = float(order['filled_qty']), float(order['filled_avg_price'])
+            signed = qty if side == 'buy' else -qty
+            held, average = positions.get(symbol, (0.0, 0.0))
+            if held == 0 or held * signed > 0:
+                total = abs(held) + qty
+                positions[symbol] = (held + signed, (average * abs(held) + price * qty) / total)
+                event, pnl = 'ENTRY', None
+            else:
+                closed_qty = min(abs(held), qty)
+                pnl = round((price - average) * closed_qty * (1 if held > 0 else -1), 2)
+                remaining = held + signed
+                positions[symbol] = (remaining, price if held * remaining < 0 else average)
+                event = {'stop': 'SL', 'limit': 'TP'}.get(order_type, 'MARKET_EXIT')
             recovered.append({
                 'time': filled_at.isoformat() if filled_at else '', 'time_et': time_et,
-                'symbol': order.get('symbol'),
-                'event': {'stop': 'SL', 'limit': 'TP'}.get(order_type, 'BROKER_FILL'),
-                'side': order.get('side'), 'price': order.get('filled_avg_price'),
-                'shares': order.get('filled_qty'), 'pnl': None,
+                'symbol': symbol, 'event': event, 'side': side, 'price': price,
+                'shares': qty, 'pnl': pnl,
                 'source': 'Recovered from Alpaca order history',
             })
         return sorted(recovered, key=lambda row: row['time'], reverse=True)
