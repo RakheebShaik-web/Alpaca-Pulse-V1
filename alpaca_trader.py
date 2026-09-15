@@ -96,7 +96,6 @@ class AlpacaTrader:
                 'market_value': float(p.market_value),
                 'unrealized_pl': float(p.unrealized_pl),
                 'unrealized_plpc': float(p.unrealized_plpc),
-                'opened_at': p.opened_at.isoformat() if p.opened_at else None,
             } for p in positions]
         except Exception as e:
             logger.error(f"Positions fetch failed: {e}")

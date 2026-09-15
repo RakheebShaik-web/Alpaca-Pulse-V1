@@ -6,15 +6,14 @@ from config import config
 
 
 def position_size(entry: float, stop: float, equity: float, buying_power: float) -> int:
-    """Whole shares, rounded down: planned stop risk never exceeds $50."""
+    """Whole shares sized only by the fixed risk budget and available buying power."""
     values = (entry, stop, equity, buying_power, config.risk_per_trade)
     if not all(isfinite(v) and v > 0 for v in values) or entry == stop:
         return 0
     price = Decimal(str(entry))
     distance = abs(price - Decimal(str(stop)))
     risk_qty = Decimal(str(config.risk_per_trade)) / distance
-    value_cap = min(Decimal(str(equity)) * Decimal(str(config.max_position_pct)),
-                    Decimal(str(buying_power)))
+    value_cap = Decimal(str(buying_power))
     return int(min(risk_qty, value_cap / price).to_integral_value(rounding=ROUND_FLOOR))
 
 

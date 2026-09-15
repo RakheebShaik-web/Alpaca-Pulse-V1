@@ -73,7 +73,7 @@ def test_state_roundtrip_and_remove_last_position():
 
 
 @pytest.mark.parametrize('entry,stop,equity,power,expected', [
-    (10, 9, 20000, 20000, 50), (100, 98, 20000, 20000, 20),
+    (10, 9, 20000, 20000, 50), (100, 98, 20000, 20000, 25),
     (100, 99, 20000, 50, 0), (100, 40, 20000, 20000, 0),
     (100, 100, 20000, 20000, 0), (10, 10.3, 20000, 20000, 166),
 ])
@@ -81,6 +81,16 @@ def test_fifty_dollar_planned_risk(entry, stop, equity, power, expected):
     qty = position_size(entry, stop, equity, power)
     assert qty == expected
     assert qty * abs(entry - stop) <= 50 + 1e-9
+
+
+@pytest.mark.parametrize('entry,stop,expected', [
+    (251.40, 250.89, 98),
+    (212.66, 212.10, 89),
+])
+def test_fixed_risk_is_not_reduced_by_portfolio_percentage(entry, stop, expected):
+    qty = position_size(entry, stop, 100_000, 300_000)
+    assert qty == expected
+    assert 49 <= qty * abs(entry - stop) <= 50
 
 
 def test_session_rollover_keeps_positions_and_resets_once():
