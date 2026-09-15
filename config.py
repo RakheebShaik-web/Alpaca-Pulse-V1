@@ -96,7 +96,7 @@ class StrategyConfig:
     # ─── Universe (override via env: UNIVERSE=AAPL,MSFT,GOOGL) ───
     _default_universe: Tuple[str, ...] = (
         'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'NVDA',
-        'TSLA', 'AMD', 'SPY', 'QQQ', 'JNJ',
+        'TSLA', 'AMD', 'QQQ', 'JNJ',
         'WMT', 'PG', 'HD', 'DIS', 'NFLX',
         'INTC', 'CRM', 'ORCL', 'CSCO', 'RKLB',
         'ASTS',
@@ -106,7 +106,8 @@ class StrategyConfig:
     def universe(self) -> Tuple[str, ...]:
         val = os.environ.get("UNIVERSE")
         if val:
-            return tuple(v.strip() for v in val.split(","))
+            return tuple(v.strip().upper() for v in val.split(",")
+                         if v.strip() and v.strip().upper() != 'SPY')
         return self._default_universe
     
     # ─── Backtest ────────────────────────────────────────────────
