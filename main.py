@@ -170,8 +170,19 @@ async def get_positions():
 
 @app.get('/api/trades')
 @app.get('/api/daily')
-async def get_trades():
-    return get_trade_summary()
+def get_trades():
+    summary = get_trade_summary()
+    today = get_et_now().date().isoformat()
+    closed = [row for row in get_trade_logs()
+              if row.get('pnl') is not None and (row.get('time_et') or '').startswith(today)]
+    if closed:
+        pnls = [float(row['pnl']) for row in closed]
+        summary.update({'total_trades': len(pnls), 'wins': sum(p > 0 for p in pnls),
+                        'losses': sum(p <= 0 for p in pnls),
+                        'total_pnl': round(sum(pnls), 2),
+                        'avg_win': round(sum(p for p in pnls if p > 0) / max(1, sum(p > 0 for p in pnls)), 2),
+                        'avg_loss': round(sum(p for p in pnls if p <= 0) / max(1, sum(p <= 0 for p in pnls)), 2)})
+    return summary
 
 
 @app.get('/api/trade-records')
@@ -232,7 +243,7 @@ def get_trade_logs():
 
 @app.get('/api/closed-positions')
 def get_closed_positions():
-    summary = get_trade_summary()
+    summary = get_trades()
     return {'total_closed': summary.get('total_trades', 0), **summary}
 
 
