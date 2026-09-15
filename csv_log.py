@@ -94,6 +94,13 @@ def log_trade(
                 "notes": notes,
             })
         
+        from supabase_ledger import upsert
+        position_id = notes.removeprefix('pos_id=') if notes.startswith('pos_id=') else notes
+        upsert({'position_id': position_id, 'entry_time': datetime.now(timezone.utc).isoformat(),
+                'symbol': symbol, 'side': side, 'entry_price': entry_price, 'shares': shares,
+                'stop_price': stop_price, 'target_price': target_price, 'pnl': pnl,
+                'pnl_pct': pnl_pct, 'exit_reason': exit_reason or None, 'status': status,
+                'notes': notes})
         logger.info(f"Trade logged: {symbol} {side} @ ${entry_price:.2f}")
     except Exception as e:
         logger.error(f"Failed to log trade: {e}")
@@ -125,6 +132,13 @@ def update_trade(position_id: str, exit_price: float, pnl: float, exit_reason: s
             writer.writeheader()
             writer.writerows(rows)
         
+        from supabase_ledger import fetch_all, upsert
+        for row in fetch_all():
+            if row['position_id'] == position_id:
+                row.update({'exit_price': exit_price, 'pnl': pnl, 'exit_reason': exit_reason,
+                            'status': 'closed', 'exit_time': datetime.now(timezone.utc).isoformat()})
+                upsert(row)
+                break
         logger.info(f"Trade updated: {position_id} PnL=${pnl:.2f}")
     except Exception as e:
         logger.error(f"Failed to update trade: {e}")
@@ -132,6 +146,10 @@ def update_trade(position_id: str, exit_price: float, pnl: float, exit_reason: s
 
 def get_trade_records() -> list:
     """Read the durable CSV ledger and present one row per bot position."""
+    from supabase_ledger import configured, fetch_all
+    if configured():
+        rows = fetch_all()
+        return _present_rows(rows)
     csv_path = Path(CSV_PATH)
     if not csv_path.exists():
         return []
@@ -163,6 +181,24 @@ def get_trade_records() -> list:
             if previous is None or row.get("status") == "closed":
                 records[key] = row
     return sorted(records.values(), key=lambda row: row.get("timestamp", ""), reverse=True)
+
+
+def _present_rows(rows):
+    eastern = ZoneInfo("America/New_York")
+    presented = []
+    for source in rows:
+        row = dict(source)
+        row['timestamp'] = row.get('entry_time', '')
+        for source_key, target in (("entry_time", "entry_time_et"), ("exit_time", "exit_time_et")):
+            value = row.get(source_key)
+            row[target] = (datetime.fromisoformat(value.replace('Z', '+00:00')).astimezone(eastern)
+                           .strftime('%Y-%m-%d %H:%M:%S %Z')) if value else ''
+        from trade_journal import exit_reason_label
+        row['exit_reason_label'] = exit_reason_label(row.get('exit_reason', ''))
+        for field in ('entry_price','exit_price','shares','stop_price','target_price','pnl','pnl_pct'):
+            row[field] = float(row.get(field) or 0)
+        presented.append(row)
+    return presented
 
 
 def get_open_trades() -> list:

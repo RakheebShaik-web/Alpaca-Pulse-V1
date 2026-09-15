@@ -75,7 +75,7 @@ class DiscordNotifier:
         quantity = trade.get("quantity", trade.get("size", 0))
         quantity_text = f"{quantity:g}" if isinstance(quantity, (int, float)) else str(quantity)
         reason = exit_reason_label(trade.get("exit_reason", ""))
-        heading = f"{symbol} {side} {quantity_text} | EXIT {reason}"
+        heading = f"{symbol} {side} {quantity_text} | EXIT {reason} | ${pnl:+.2f}"
         
         embed = {
             "title": heading,

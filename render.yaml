@@ -15,5 +15,9 @@ services:
         value: "true"
       - key: DISCORD_WEBHOOK_URL
         sync: false
+      - key: SUPABASE_URL
+        value: "https://ekevpjqouyicrzznhjiv.supabase.co"
+      - key: SUPABASE_SECRET_KEY
+        sync: false
     healthCheckPath: "/"
     autoDeploy: true

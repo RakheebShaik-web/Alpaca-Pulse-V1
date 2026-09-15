@@ -35,8 +35,8 @@ def test_discord_exit_alert_includes_reason():
     notifier.send_exit_alert({"symbol": "SPY", "side": "long", "quantity": 12,
                               "entry": 100, "exit_price": 98, "pnl": -24,
                               "exit_reason": "stop_loss"})
-    assert notifier.captured.content == "SPY LONG 12 | EXIT SL"
-    assert notifier.captured.embeds[0]["title"] == "SPY LONG 12 | EXIT SL"
+    assert notifier.captured.content == "SPY LONG 12 | EXIT SL | $-24.00"
+    assert notifier.captured.embeds[0]["title"] == "SPY LONG 12 | EXIT SL | $-24.00"
 
 
 def test_csv_ledger_updates_one_trade_row_and_keeps_eastern_times(tmp_path, monkeypatch):
