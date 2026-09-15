@@ -3,15 +3,53 @@ trade_journal.py — Auto-generated trade journal with lessons learned.
 Because professionals journal their trades. Gamblers just check P&L.
 """
 import json
+import os
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from pathlib import Path
 from typing import Optional, Dict, List
 from dataclasses import dataclass, field, asdict
 
 logger = logging.getLogger(__name__)
 
-JOURNAL_PATH = "data/trade_journal.json"
+JOURNAL_PATH = os.environ.get('JOURNAL_PATH', 'data/trade_journal.json')
+EASTERN = ZoneInfo("America/New_York")
+
+EXIT_REASON_LABELS = {
+    "stop_loss": "SL",
+    "target": "TP",
+    "take_profit": "TP",
+    "trailing_stop": "TRAIL",
+    "manual_close": "MANUAL",
+    "broker_exit": "BROKER",
+    "close_eod": "EOD",
+    "partial_entry": "PARTIAL",
+}
+
+
+def _eastern_timestamp(value: str) -> str:
+    if not value:
+        return ""
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(EASTERN).strftime("%Y-%m-%d %H:%M:%S %Z")
+
+
+def exit_reason_label(reason: str) -> str:
+    key = (reason or "").strip().lower()
+    return EXIT_REASON_LABELS.get(key, key.replace("_", " ").upper() or "—")
+
+
+def present_entries(entries: List[Dict]) -> List[Dict]:
+    """Return UI-safe journal rows with explicit US Eastern timestamps."""
+    return [{
+        **entry,
+        "entry_time_et": _eastern_timestamp(entry.get("timestamp", "")),
+        "exit_time_et": _eastern_timestamp(entry.get("exit_time", "")),
+        "exit_reason_label": exit_reason_label(entry.get("exit_reason", "")),
+    } for entry in entries]
 
 
 @dataclass
@@ -88,7 +126,7 @@ class TradeJournal:
         risk_reward = abs(target_price - entry_price) / abs(entry_price - stop_price) if abs(entry_price - stop_price) > 0 else 0
         
         entry = JournalEntry(
-            timestamp=datetime.now().isoformat(),
+            timestamp=datetime.now(timezone.utc).isoformat(),
             symbol=symbol,
             side=side,
             entry_price=entry_price,
@@ -115,7 +153,7 @@ class TradeJournal:
         for entry in reversed(self.entries):
             if entry['symbol'] == symbol and entry['status'] == 'open':
                 entry['exit_price'] = exit_price
-                entry['exit_time'] = datetime.now().isoformat()
+                entry['exit_time'] = datetime.now(timezone.utc).isoformat()
                 entry['exit_reason'] = exit_reason
                 entry['trailing_stop_used'] = trailing_stop_used
                 entry['breakeven_hit'] = breakeven_hit

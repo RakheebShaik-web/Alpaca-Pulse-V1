@@ -177,6 +177,17 @@ def test_exit_management_survives_entry_gates(runtime, condition):
     assert runtime.state.get_position(p.position_id) is p
 
 
+def test_all_positions_close_ten_minutes_before_market_close(runtime):
+    p = record()
+    p.entry_confirmed = True
+    runtime.state.add_position(p)
+    runtime.system.trader.get_positions.return_value = [broker_position()]
+    runtime.request_close = Mock()
+    runtime.tick(datetime(2026, 9, 14, 15, 50))
+    runtime.request_close.assert_called_once_with(p, 'close_eod')
+    runtime.system.strategy.generate_all_signals.assert_not_called()
+
+
 def test_failed_close_preserves_position_and_pnl(runtime):
     p = record()
     p.entry_confirmed = True

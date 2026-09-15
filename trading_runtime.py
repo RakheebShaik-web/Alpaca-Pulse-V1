@@ -30,6 +30,7 @@ class TradingRuntime:
         self.last_scan = []
         self.last_scan_at = None
         self.last_scan_error = None
+        self.last_cycle_at = None
 
     @property
     def state(self):
@@ -279,6 +280,7 @@ class TradingRuntime:
         self.restore_strategy()
 
     def tick(self, now, allow_entries=True, skip_symbol=lambda symbol: False):
+        self.last_cycle_at = now.isoformat()
         self.system.data_feed.begin_cycle()
         if reset_session(self.state, now):
             self.persist()
@@ -287,6 +289,10 @@ class TradingRuntime:
             return
         # Existing exposure is managed regardless of entry hours or risk limits.
         self.manage_positions()
+        if now.time() >= config.hard_close_time:
+            for position in list(self.state.all_positions()):
+                self.request_close(position, 'close_eod')
+            return
         if not self.ready or not allow_entries or self.close_requested:
             return
         account = self.system.trader.get_account()

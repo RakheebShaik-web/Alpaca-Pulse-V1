@@ -1,134 +1,292 @@
 #!/usr/bin/env python3
-"""
-FastAPI server for the trading system.
-"""
-import os
+"""FastAPI server and supervised trading runtime for Pulse V1."""
 import asyncio
 import logging
+import os
+import secrets
+from contextlib import asynccontextmanager
 from datetime import datetime
 
 import uvicorn
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
-from config import config
 from alpaca_trader import AlpacaTrader
-from institutional_strategy import get_et_now
+from csv_log import get_trade_records as get_csv_trade_records
+from csv_log import get_trade_summary, log_trade, update_trade
+from data_feed import DataFeed
+from discord_notifier import DiscordNotifier
+from earnings_filter import earnings_filter
+from institutional_strategy import InstitutionalStrategy, get_et_now
+from state_store import BotState, load_state, save_state
+from trade_journal import journal
+from trading_runtime import TradingRuntime
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s | %(levelname)s | %(message)s')
 logger = logging.getLogger(__name__)
-
-app = FastAPI(title="Pulse V1")
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-trader = AlpacaTrader()
-bot_status = "stopped"
+security = HTTPBearer(auto_error=False)
 
 
-@app.get("/")
+def require_admin_key(credentials: HTTPAuthorizationCredentials | None = Depends(security),
+                      x_admin_api_key: str = Header(default='')):
+    admin_key = os.getenv('ADMIN_API_KEY')
+    if not admin_key:
+        raise HTTPException(status_code=503, detail='ADMIN_API_KEY is not configured')
+    provided = credentials.credentials if credentials else x_admin_api_key
+    if not secrets.compare_digest(provided, admin_key):
+        raise HTTPException(status_code=401, detail='Invalid API key')
+    return True
+
+
+class TradingSystem:
+    def __init__(self):
+        self.trader = AlpacaTrader()
+        self.data_feed = DataFeed(self.trader)
+        self.strategy = InstitutionalStrategy(self.data_feed)
+        self.notifier = DiscordNotifier(os.getenv('DISCORD_WEBHOOK_URL', ''))
+        self.state = BotState()
+        self.status = 'stopped'
+        self.mode = 'paper'
+        self.start_time = None
+        self._trading_task = None
+
+    def get_portfolio_value(self):
+        try:
+            account = self.trader.get_account()
+            return account['equity'] if account else 0.0
+        except Exception:
+            return 0.0
+
+    def get_buying_power(self):
+        try:
+            account = self.trader.get_account()
+            return account['buying_power'] if account else 0.0
+        except Exception:
+            return 0.0
+
+
+system = TradingSystem()
+
+
+def report_closed(position):
+    exit_price = position.accounted_exit_value / position.accounted_exit_qty
+    reason = position.exit_reason or 'broker_exit'
+    update_trade(position.position_id, exit_price, position.realized_pnl, reason)
+    journal.close_entry(position.symbol, exit_price, reason,
+                        position.trailing_stop is not None, position.breakeven_active)
+    system.notifier.send_exit_alert({
+        'symbol': position.symbol, 'side': position.side,
+        'quantity': position.accounted_exit_qty, 'entry': position.entry_price,
+        'exit_price': exit_price, 'pnl': position.realized_pnl,
+        'daily_pnl': system.state.daily_pnl, 'exit_reason': reason,
+    })
+
+
+def report_opened(position):
+    log_trade(symbol=position.symbol, side=position.side,
+              entry_price=position.entry_price, shares=position.shares,
+              stop_price=position.stop_price, target_price=position.target_price,
+              status='open', notes=f'pos_id={position.position_id}')
+    journal.add_entry(position.symbol, position.side, position.entry_price,
+                      position.shares, position.stop_price, position.target_price,
+                      0, 'InstitutionalStrategy; broker-confirmed fill', 'not recorded')
+    system.notifier.send_trade_alert({
+        'symbol': position.symbol, 'side': position.side,
+        'quantity': position.shares, 'entry': position.entry_price,
+        'stop': position.stop_price, 'tp': position.target_price,
+        'risk': abs(position.entry_price - position.stop_price) * position.shares,
+    })
+
+
+runtime = TradingRuntime(system, on_closed=report_closed, on_opened=report_opened)
+
+
+async def trading_loop():
+    while True:
+        try:
+            if system.status == 'running' or system.state.all_positions() or runtime.close_requested:
+                await asyncio.to_thread(runtime.tick, get_et_now(), system.status == 'running',
+                                        earnings_filter.should_skip)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception('Trading cycle failed')
+        await asyncio.sleep(30)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    system.state = load_state()
+    if system.trader.api_key and system.trader.secret_key:
+        runtime.reconcile()
+    system._trading_task = asyncio.create_task(trading_loop())
+    yield
+    system._trading_task.cancel()
+    try:
+        await system._trading_task
+    except asyncio.CancelledError:
+        pass
+    save_state(system.state)
+
+
+app = FastAPI(title='Pulse V1', version='3.0.0', lifespan=lifespan)
+app.add_middleware(CORSMiddleware, allow_origins=['*'], allow_credentials=True,
+                   allow_methods=['*'], allow_headers=['*'])
+
+
+@app.get('/')
 async def root():
-    return {"status": "ok", "service": "Pulse V1"}
+    return {'status': 'ok', 'service': 'Pulse V1'}
 
 
-@app.get("/api/status")
-async def get_status():
-    global bot_status
-    account = trader.get_account()
-    equity = float(account.get('equity', 0)) if account else 0
-    last_equity = float(account.get('last_equity', equity)) if account else equity
-    buying_power = float(account.get('buying_power', 0)) if account else 0
-    positions = trader.get_positions()
-
+@app.get('/api/status')
+async def get_status(_=Depends(require_admin_key)):
+    uptime = ((datetime.utcnow() - system.start_time).total_seconds()
+              if system.start_time else 0.0)
     return {
-        "status": bot_status,
-        "mode": "paper",
-        "daily_pnl": round(equity - last_equity, 2),
-        "total_trades": 0,
-        "active_positions": len(positions),
-        "portfolio_value": round(equity, 2),
-        "buying_power": round(buying_power, 2),
+        'status': system.status, 'mode': system.mode, 'uptime': uptime,
+        'daily_pnl': system.state.daily_pnl,
+        'total_trades': system.state.trades_today,
+        'active_positions': len(system.state.all_positions()),
+        'portfolio_value': system.get_portfolio_value(),
+        'buying_power': system.get_buying_power(),
+        'reconciliation_error': runtime.error, 'last_scan_at': runtime.last_scan_at,
+        'last_scan_error': runtime.last_scan_error, 'last_cycle_at': runtime.last_cycle_at,
     }
 
 
-@app.get("/api/positions")
-async def get_positions():
-    positions = trader.get_positions()
-    result = []
-    for p in positions:
-        entry = p.get('entry_price', 0)
-        current = p.get('current_price', 0)
-        qty = p.get('qty', 0)
-        side = p.get('side', 'long')
-        risk = config.risk_per_trade / qty if qty > 0 else 0
-
-        if side == 'long':
-            sl = round(entry - risk, 2)
-            tp1 = round(entry + risk * 0.8, 2)
-            tp2 = round(entry + risk * 1.5, 2)
-        else:
-            sl = round(entry + risk, 2)
-            tp1 = round(entry - risk * 0.8, 2)
-            tp2 = round(entry - risk * 1.5, 2)
-
-        result.append({
-            "symbol": p.get('symbol'),
-            "side": side,
-            "remaining": qty,
-            "entry": round(entry, 2),
-            "sl": sl, "tp1": tp1, "tp2": tp2,
-            "current_price": round(current, 2),
-            "pnl": round(p.get('unrealized_pl', 0), 2),
-        })
-    return result
+@app.get('/api/positions')
+async def get_positions(_=Depends(require_admin_key)):
+    return [{'symbol': p['symbol'], 'side': p['side'], 'entry': p['entry_price'],
+             'current_price': p['current_price'], 'size': p['qty'],
+             'pnl': p['unrealized_pl'], 'pnl_pct': p['unrealized_plpc']}
+            for p in system.trader.get_positions()]
 
 
-@app.get("/api/trades")
-async def get_trades():
-    return {"total_trades": 0, "wins": 0, "losses": 0, "total_pnl": 0}
+@app.get('/api/trades')
+@app.get('/api/daily')
+async def get_trades(_=Depends(require_admin_key)):
+    return get_trade_summary()
 
 
-@app.get("/api/clock")
+@app.get('/api/trade-records')
+def get_trade_records(_=Depends(require_admin_key)):
+    return {'records': get_csv_trade_records(),
+            'source': 'Durable CSV trade ledger; times shown in US Eastern'}
+
+
+@app.get('/api/trade-logs')
+def get_trade_logs(_=Depends(require_admin_key)):
+    return [{
+        'time': row.get('timestamp'), 'time_et': row.get('entry_time_et'),
+        'symbol': row.get('symbol'),
+        'event': ('ENTRY_' + row.get('side', '').upper()) if row.get('status') == 'open'
+                 else row.get('exit_reason_label'),
+        'side': row.get('side'), 'price': row.get('exit_price') or row.get('entry_price'),
+        'shares': row.get('shares'), 'pnl': row.get('pnl'),
+    } for row in get_csv_trade_records()]
+
+
+@app.get('/api/closed-positions')
+def get_closed_positions(_=Depends(require_admin_key)):
+    summary = get_trade_summary()
+    return {'total_closed': summary.get('total_trades', 0), **summary}
+
+
+@app.get('/api/pnl-curve')
+def get_pnl_curve(_=Depends(require_admin_key)):
+    total = 0.0
+    curve = []
+    for row in reversed(get_csv_trade_records()):
+        if row.get('status') == 'closed':
+            total += row.get('pnl', 0)
+            curve.append({'time': row.get('exit_time_et'), 'pnl': round(total, 2)})
+    return curve
+
+
+@app.get('/api/symbol-stats')
+def get_symbol_stats(_=Depends(require_admin_key)):
+    stats = {}
+    for row in get_csv_trade_records():
+        if row.get('status') != 'closed':
+            continue
+        item = stats.setdefault(row.get('symbol'), {'trades': 0, 'wins': 0, 'losses': 0, 'pnl': 0.0})
+        item['trades'] += 1
+        item['wins' if row.get('pnl', 0) > 0 else 'losses'] += 1
+        item['pnl'] += row.get('pnl', 0)
+    return [{'symbol': symbol, **item,
+             'win_rate': item['wins'] / item['trades'] * 100}
+            for symbol, item in stats.items()]
+
+
+@app.get('/api/weekly')
+async def get_weekly_summary(_=Depends(require_admin_key)):
+    return journal.get_weekly_summary()
+
+
+@app.get('/api/journal')
+async def get_journal(_=Depends(require_admin_key)):
+    return journal.get_summary()
+
+
+@app.get('/api/scan')
+async def get_scan(_=Depends(require_admin_key)):
+    return runtime.last_scan
+
+
+@app.get('/api/clock')
 async def get_clock():
-    now = get_et_now()
-    return {
-        "time": now.strftime("%I:%M:%S %p ET"),
-        "date": now.strftime("%m/%d/%Y"),
-        "market_open": True,
-    }
+    clock = system.trader.get_clock()
+    if not clock:
+        raise HTTPException(status_code=500, detail='Failed to fetch clock')
+    return clock
 
 
-@app.post("/api/start")
-async def start_bot():
-    global bot_status
-    bot_status = "running"
-    return {"status": "started"}
+@app.post('/api/start')
+async def start_trading(_=Depends(require_admin_key)):
+    if runtime.close_requested and system.state.all_positions():
+        raise HTTPException(status_code=409, detail='Close-all is still pending')
+    runtime.close_requested = False
+    runtime.reconcile()
+    if not runtime.ready:
+        raise HTTPException(status_code=503, detail=runtime.error)
+    system.status = 'running'
+    system.mode = 'paper' if system.trader.paper else 'live'
+    system.start_time = datetime.utcnow()
+    return {'status': 'started', 'mode': system.mode}
 
 
-@app.post("/api/stop")
-async def stop_bot():
-    global bot_status
-    bot_status = "stopped"
-    return {"status": "stopped"}
+@app.post('/api/stop')
+async def stop_trading(_=Depends(require_admin_key)):
+    system.status = 'stopped'
+    return {'status': 'stopped', 'position_management': 'active'}
 
 
-@app.post("/api/close-all")
-async def close_all():
-    trader.close_all_positions()
-    return {"status": "ok"}
+@app.post('/api/close-all', status_code=202)
+async def close_all(_=Depends(require_admin_key)):
+    system.status = 'stopped'
+    runtime.close_requested = True
+    runtime.reconcile()
+    for position in system.state.all_positions():
+        position.exit_reason = 'manual_close'
+    save_state(system.state)
+    runtime.manage_positions()
+    return {'status': 'close_requested', 'remaining': len(system.state.all_positions()),
+            'error': runtime.error}
 
 
-@app.post("/api/cancel-all")
-async def cancel_all():
-    trader.cancel_all_orders()
-    return {"status": "ok"}
+@app.post('/api/cancel-all')
+async def cancel_all(_=Depends(require_admin_key)):
+    system.status = 'stopped'
+    try:
+        for order in system.trader.open_orders():
+            system.trader.trading_client.cancel_order_by_id(order['id'])
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail='Order cancellation failed') from exc
+    return {'status': 'cancellation_requested'}
 
 
-if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+if __name__ == '__main__':
+    uvicorn.run('main:app', host='0.0.0.0', port=int(os.environ.get('PORT', 10000)),
+                reload=False, log_level='info')

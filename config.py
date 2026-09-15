@@ -80,10 +80,14 @@ class StrategyConfig:
     # ─── Trailing Stops ──────────────────────────────────────────
     trailing_stop_enabled: bool = _env_str("TRAILING_STOP", "true").lower() == "true"
     breakeven_activation: float = _env_float("BREAKEVEN_ACTIVATION", 1.0)
+
+    max_sector_exposure: float = _env_float("MAX_SECTOR_EXPOSURE", 0.30)
+    tech_symbols: Tuple[str, ...] = ('AAPL', 'MSFT', 'GOOGL', 'META', 'NVDA', 'AMD', 'TSLA')
     
     # ─── Timing (ET) ─────────────────────────────────────────────
     trading_start: time = _env_time("TRADING_START", "09:30")
     trading_end: time = _env_time("TRADING_END", "15:50")
+    hard_close_time: time = _env_time("HARD_CLOSE_TIME", "15:50")
     morning_window_start: time = _env_time("MORNING_START", "09:45")
     morning_window_end: time = _env_time("MORNING_END", "11:00")
     afternoon_window_start: time = _env_time("AFTERNOON_START", "14:00")

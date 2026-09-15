@@ -6,6 +6,8 @@ import logging
 from datetime import datetime
 from typing import Optional
 
+from trade_journal import exit_reason_label
+
 import requests
 
 logger = logging.getLogger(__name__)
@@ -43,36 +45,43 @@ class DiscordNotifier:
     
     def send_trade_alert(self, trade: dict):
         """Send a formatted trade alert."""
-        direction = trade.get("direction", "LONG").upper()
-        emoji = "🟢" if direction == "LONG" else "🔴"
+        symbol = trade.get("symbol", "???").upper()
+        side = trade.get("side", trade.get("direction", "long")).upper()
+        quantity = trade.get("quantity", trade.get("size", 0))
+        heading = f"{symbol} {side} {quantity:g}" if isinstance(quantity, (int, float)) else f"{symbol} {side} {quantity}"
         
         embed = {
-            "title": f"{emoji} {direction} {trade.get('symbol', '???')}",
-            "color": 0x00FF00 if direction == "LONG" else 0xFF0000,
+            "title": heading,
+            "color": 0x2F855A if side == "LONG" else 0xC53030,
             "fields": [
                 {"name": "Entry", "value": f"${trade.get('entry', 0):.2f}", "inline": True},
                 {"name": "Stop Loss", "value": f"${trade.get('stop', 0):.2f}", "inline": True},
                 {"name": "Take Profit", "value": f"${trade.get('tp', 0):.2f}", "inline": True},
-                {"name": "Size", "value": f"{trade.get('size', 0)} shares", "inline": True},
+                {"name": "Quantity", "value": str(quantity), "inline": True},
                 {"name": "Risk", "value": f"${trade.get('risk', 0):.2f}", "inline": True},
                 {"name": "Gap", "value": f"{trade.get('gap_pct', 0):+.2%}", "inline": True},
             ],
             "timestamp": datetime.utcnow().isoformat(),
         }
         
-        self.send(f"**Trade Alert: {trade.get('symbol')}**", embeds=[embed])
+        self.send(heading, embeds=[embed])
     
     def send_exit_alert(self, trade: dict):
         """Send a trade exit notification."""
         pnl = trade.get("pnl", 0)
-        emoji = "✅" if pnl > 0 else "❌"
         color = 0x00FF00 if pnl > 0 else 0xFF0000
+        symbol = trade.get("symbol", "???").upper()
+        side = trade.get("side", trade.get("direction", "long")).upper()
+        quantity = trade.get("quantity", trade.get("size", 0))
+        quantity_text = f"{quantity:g}" if isinstance(quantity, (int, float)) else str(quantity)
+        reason = exit_reason_label(trade.get("exit_reason", ""))
+        heading = f"{symbol} {side} {quantity_text} | EXIT {reason}"
         
         embed = {
-            "title": f"{emoji} CLOSED {trade.get('symbol', '???')}",
+            "title": heading,
             "color": color,
             "fields": [
-                {"name": "Direction", "value": trade.get("direction", "LONG").upper(), "inline": True},
+                {"name": "Reason", "value": reason, "inline": True},
                 {"name": "Entry", "value": f"${trade.get('entry', 0):.2f}", "inline": True},
                 {"name": "Exit", "value": f"${trade.get('exit_price', 0):.2f}", "inline": True},
                 {"name": "PnL", "value": f"${pnl:+.2f}", "inline": True},
@@ -81,7 +90,7 @@ class DiscordNotifier:
             "timestamp": datetime.utcnow().isoformat(),
         }
         
-        self.send(f"**Position Closed: {trade.get('symbol')}**", embeds=[embed])
+        self.send(heading, embeds=[embed])
     
     def send_daily_summary(self, summary: dict):
         """Send end-of-day summary."""

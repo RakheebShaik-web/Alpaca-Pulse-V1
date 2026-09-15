@@ -5,7 +5,8 @@ Logs all trades to CSV with full audit trail.
 import csv
 import os
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from pathlib import Path
 from typing import Optional
 
@@ -16,6 +17,7 @@ CSV_PATH = os.environ.get("TRADES_CSV_PATH", "data/trades.csv")
 # CSV columns
 COLUMNS = [
     "timestamp",
+    "exit_time",
     "symbol",
     "side",
     "entry_price",
@@ -41,6 +43,17 @@ def ensure_csv_exists():
             writer = csv.DictWriter(f, fieldnames=COLUMNS)
             writer.writeheader()
         logger.info(f"Created trades CSV at {csv_path}")
+        return
+    with open(csv_path, "r", newline="") as f:
+        reader = csv.DictReader(f)
+        rows = list(reader)
+        existing = reader.fieldnames or []
+    if existing != COLUMNS:
+        with open(csv_path, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=COLUMNS, extrasaction="ignore")
+            writer.writeheader()
+            writer.writerows(rows)
+        logger.info("Migrated trades CSV schema")
 
 
 def log_trade(
@@ -64,7 +77,8 @@ def log_trade(
         with open(CSV_PATH, "a", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=COLUMNS)
             writer.writerow({
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "exit_time": datetime.now(timezone.utc).isoformat() if status == "closed" else "",
                 "symbol": symbol,
                 "side": side,
                 "entry_price": entry_price,
@@ -101,6 +115,7 @@ def update_trade(position_id: str, exit_price: float, pnl: float, exit_reason: s
                     row["pnl"] = pnl
                     row["exit_reason"] = exit_reason
                     row["status"] = "closed"
+                    row["exit_time"] = datetime.now(timezone.utc).isoformat()
                 rows.append(row)
         
         # Write back
@@ -112,6 +127,41 @@ def update_trade(position_id: str, exit_price: float, pnl: float, exit_reason: s
         logger.info(f"Trade updated: {position_id} PnL=${pnl:.2f}")
     except Exception as e:
         logger.error(f"Failed to update trade: {e}")
+
+
+def get_trade_records() -> list:
+    """Read the durable CSV ledger and present one row per bot position."""
+    csv_path = Path(CSV_PATH)
+    if not csv_path.exists():
+        return []
+    eastern = ZoneInfo("America/New_York")
+    records = {}
+    with open(csv_path, "r", newline="") as f:
+        for index, row in enumerate(csv.DictReader(f)):
+            position_id = row.get("notes", "")
+            key = position_id if position_id.startswith("pos_id=") else f"row-{index}"
+            for field in ("entry_price", "exit_price", "shares", "stop_price",
+                          "target_price", "pnl", "pnl_pct"):
+                try:
+                    row[field] = float(row.get(field) or 0)
+                except (TypeError, ValueError):
+                    row[field] = 0.0
+            for source, target in (("timestamp", "entry_time_et"),
+                                   ("exit_time", "exit_time_et")):
+                value = row.get(source, "")
+                if value:
+                    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+                    if parsed.tzinfo is None:
+                        parsed = parsed.replace(tzinfo=timezone.utc)
+                    row[target] = parsed.astimezone(eastern).strftime("%Y-%m-%d %H:%M:%S %Z")
+                else:
+                    row[target] = ""
+            from trade_journal import exit_reason_label
+            row["exit_reason_label"] = exit_reason_label(row.get("exit_reason", ""))
+            previous = records.get(key)
+            if previous is None or row.get("status") == "closed":
+                records[key] = row
+    return sorted(records.values(), key=lambda row: row.get("timestamp", ""), reverse=True)
 
 
 def get_open_trades() -> list:
