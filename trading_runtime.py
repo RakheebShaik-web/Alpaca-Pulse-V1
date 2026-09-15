@@ -90,6 +90,12 @@ class TradingRuntime:
                     logger.exception('Recovered entry reporting failed for %s', symbol)
             for p in self.state.all_positions():
                 if p.entry_confirmed and p.symbol not in actual:
+                    if p.notes.startswith('Recovered broker position') and not p.entry_order_id:
+                        logger.warning('Removing stale recovered position after broker became flat: %s', p.symbol)
+                        self.state.remove_position(p.position_id)
+                        self.system.strategy.close_position(p.symbol)
+                        self.persist()
+                        continue
                     raise RuntimeError(f'{p.symbol}: broker is flat but exit fills are unresolved')
                 if p.entry_client_id and not p.entry_order_id:
                     raise RuntimeError(f'{p.symbol}: submission outcome unknown; resolve client order ID')
