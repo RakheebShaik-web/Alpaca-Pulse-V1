@@ -80,9 +80,14 @@ class TradingRuntime:
                                  round(entry * (1 - sign * .005), 2),
                                  round(entry * (1 + sign * .005 * config.rr_ratio), 2))
                 p.entry_confirmed = True
+                p.entry_reported = True
                 p.notes = 'Recovered broker position; fallback risk levels'
                 self.state.add_position(p)
                 self.persist()
+                try:
+                    self.on_opened(p)
+                except Exception:
+                    logger.exception('Recovered entry reporting failed for %s', symbol)
             for p in self.state.all_positions():
                 if p.entry_confirmed and p.symbol not in actual:
                     raise RuntimeError(f'{p.symbol}: broker is flat but exit fills are unresolved')

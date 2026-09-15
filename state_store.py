@@ -16,7 +16,8 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-STATE_PATH = os.environ.get("BOT_STATE_PATH", "data/bot_state.json")
+DATA_DIR = Path(os.environ.get("DATA_DIR", "data"))
+STATE_PATH = os.environ.get("BOT_STATE_PATH", str(DATA_DIR / "bot_state.json"))
 STATE_SCHEMA_VERSION = 1
 
 

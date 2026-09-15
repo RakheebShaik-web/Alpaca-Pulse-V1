@@ -13,7 +13,8 @@ from dataclasses import dataclass, field, asdict
 
 logger = logging.getLogger(__name__)
 
-JOURNAL_PATH = os.environ.get('JOURNAL_PATH', 'data/trade_journal.json')
+DATA_DIR = Path(os.environ.get('DATA_DIR', 'data'))
+JOURNAL_PATH = os.environ.get('JOURNAL_PATH', str(DATA_DIR / 'trade_journal.json'))
 EASTERN = ZoneInfo("America/New_York")
 
 EXIT_REASON_LABELS = {

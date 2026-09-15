@@ -182,6 +182,30 @@ def get_trade_records():
 
 @app.get('/api/trade-logs')
 def get_trade_logs():
+    records = get_csv_trade_records()
+    if not records:
+        eastern = __import__('zoneinfo').ZoneInfo('America/New_York')
+        recovered = []
+        for order in system.trader.get_orders(status='closed'):
+            if not order.get('filled_qty') or not order.get('filled_avg_price'):
+                continue
+            filled_at = order.get('filled_at')
+            if filled_at:
+                if isinstance(filled_at, str):
+                    filled_at = datetime.fromisoformat(filled_at.replace('Z', '+00:00'))
+                time_et = filled_at.astimezone(eastern).strftime('%Y-%m-%d %H:%M:%S %Z')
+            else:
+                time_et = ''
+            order_type = (order.get('type') or '').lower()
+            recovered.append({
+                'time': filled_at.isoformat() if filled_at else '', 'time_et': time_et,
+                'symbol': order.get('symbol'),
+                'event': {'stop': 'SL', 'limit': 'TP'}.get(order_type, 'BROKER_FILL'),
+                'side': order.get('side'), 'price': order.get('filled_avg_price'),
+                'shares': order.get('filled_qty'), 'pnl': None,
+                'source': 'Recovered from Alpaca order history',
+            })
+        return sorted(recovered, key=lambda row: row['time'], reverse=True)
     return [{
         'time': row.get('timestamp'), 'time_et': row.get('entry_time_et'),
         'symbol': row.get('symbol'),
@@ -189,7 +213,7 @@ def get_trade_logs():
                  else row.get('exit_reason_label'),
         'side': row.get('side'), 'price': row.get('exit_price') or row.get('entry_price'),
         'shares': row.get('shares'), 'pnl': row.get('pnl'),
-    } for row in get_csv_trade_records()]
+    } for row in records]
 
 
 @app.get('/api/closed-positions')

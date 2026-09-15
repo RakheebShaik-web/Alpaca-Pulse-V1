@@ -12,7 +12,8 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-CSV_PATH = os.environ.get("TRADES_CSV_PATH", "data/trades.csv")
+DATA_DIR = Path(os.environ.get("DATA_DIR", "data"))
+CSV_PATH = os.environ.get("TRADES_CSV_PATH", str(DATA_DIR / "trades.csv"))
 
 # CSV columns
 COLUMNS = [
