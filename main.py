@@ -182,6 +182,8 @@ def get_trades():
                         'total_pnl': round(sum(pnls), 2),
                         'avg_win': round(sum(p for p in pnls if p > 0) / max(1, sum(p > 0 for p in pnls)), 2),
                         'avg_loss': round(sum(p for p in pnls if p <= 0) / max(1, sum(p <= 0 for p in pnls)), 2)})
+    total = summary.get('total_trades', 0)
+    summary['win_rate'] = round(summary.get('wins', 0) / total * 100, 1) if total else 0.0
     return summary
 
 
