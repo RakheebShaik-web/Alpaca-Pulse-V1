@@ -277,8 +277,29 @@ def test_daily_slots_enforced_within_signal_batch(runtime):
     runtime.system.strategy.generate_all_signals.return_value = [signal(symbol=s) for s in ['SPY','QQQ','WMT']]
     runtime.system.trader.submit_bracket_order.return_value = {'id': 'entry'}
     runtime.tick(datetime(2026, 9, 11, 10))
-    assert runtime.state.trades_today == 3
-    runtime.system.trader.submit_bracket_order.assert_called_once()
+    assert runtime.state.trades_today == 2
+    runtime.system.trader.submit_bracket_order.assert_not_called()
+
+
+def test_loss_cooldown_blocks_immediate_reentry(runtime):
+    runtime.state.session_date = '2026-09-11'
+    runtime.state.last_sl_at = '2026-09-11T13:45:00+00:00'
+    runtime.system.strategy.clock = lambda: datetime(2026, 9, 11, 14, 0,
+                                                      tzinfo=__import__('datetime').timezone.utc)
+    runtime.tick(datetime(2026, 9, 11, 10, 0))
+    runtime.system.strategy.generate_all_signals.assert_not_called()
+
+
+def test_completed_loss_records_cooldown_timestamp(runtime):
+    runtime.state.session_date = '2026-09-11'
+    p = record()
+    p.entry_order_id = 'entry'
+    runtime.state.add_position(p)
+    stop = order('sl', price=98)
+    stop['filled_at'] = '2026-09-11T14:00:00Z'
+    runtime.system.trader.get_order.return_value = order(legs=[stop])
+    runtime.reconcile_record(p)
+    assert runtime.state.last_sl_at == '2026-09-11T14:00:00Z'
 
 
 def test_auth_missing_and_case_sensitive(monkeypatch):

@@ -192,6 +192,9 @@ class TradingRuntime:
                              if latest_fill else self.state.session_date)
             if close_session == self.state.session_date:
                 self.state.consecutive_losses = self.state.consecutive_losses + 1 if p.realized_pnl < 0 else 0
+                self.state.last_trade_at = latest_fill
+                if p.realized_pnl < 0:
+                    self.state.last_sl_at = latest_fill
             self.state.remove_position(p.position_id)
             self.system.strategy.close_position(p.symbol)
             self.persist()

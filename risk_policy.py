@@ -1,6 +1,7 @@
 """Shared planned-risk policy for live execution and historical replay."""
 from decimal import Decimal, ROUND_FLOOR
 from math import isfinite
+from datetime import datetime
 
 from config import config
 
@@ -31,6 +32,15 @@ def reset_session(state, now) -> bool:
 
 
 def entries_allowed(state, strategy, equity: float) -> bool:
+    now = strategy.clock()
+    last_loss = datetime.fromisoformat(state.last_sl_at.replace('Z', '+00:00')) if state.last_sl_at else None
+    if last_loss is not None:
+        if now.tzinfo is None and last_loss.tzinfo is not None:
+            last_loss = last_loss.replace(tzinfo=None)
+        elif now.tzinfo is not None and last_loss.tzinfo is None:
+            last_loss = last_loss.replace(tzinfo=now.tzinfo)
+        if (now - last_loss).total_seconds() < config.cooldown_minutes_after_sl * 60:
+            return False
     return (equity > 0 and strategy.is_execution_window()
             and state.trades_today < config.max_trades_per_day
             and state.daily_pnl > -config.max_daily_loss

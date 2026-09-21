@@ -34,8 +34,8 @@ class StrategyConfig:
     capital: float = _env_float("CAPITAL", 20_000)
     risk_per_trade: float = _env_float("RISK_PER_TRADE", 50)
     rr_ratio: float = _env_float("RR_RATIO", 2.0)
-    max_trades_per_day: int = _env_int("MAX_TRADES_PER_DAY", 3)
-    max_daily_loss: float = _env_float("MAX_DAILY_LOSS", 200)
+    max_trades_per_day: int = min(_env_int("MAX_TRADES_PER_DAY", 2), 2)
+    max_daily_loss: float = min(_env_float("MAX_DAILY_LOSS", 100), 100)
     target_daily_pnl: float = _env_float("TARGET_DAILY_PNL", 150)
     max_position_pct: float = _env_float("MAX_POSITION_PCT", 0.10)
     max_correlated_trades: int = _env_int("MAX_CORRELATED_TRADES", 2)
@@ -43,7 +43,7 @@ class StrategyConfig:
     # ─── Cooldown Management ─────────────────────────────────────
     cooldown_minutes_after_sl: int = _env_int("COOLDOWN_AFTER_SL", 45)
     cooldown_minutes_after_win: int = _env_int("COOLDOWN_AFTER_WIN", 10)
-    max_consecutive_losses: int = _env_int("MAX_CONSECUTIVE_LOSSES", 3)
+    max_consecutive_losses: int = min(_env_int("MAX_CONSECUTIVE_LOSSES", 2), 2)
     
     # ─── VWAP Parameters ─────────────────────────────────────────
     vwap_std_dev_multiplier: float = _env_float("VWAP_STD_DEV", 1.5)
@@ -94,20 +94,16 @@ class StrategyConfig:
     afternoon_window_end: time = _env_time("AFTERNOON_END", "15:30")
     
     # ─── Universe (override via env: UNIVERSE=AAPL,MSFT,GOOGL) ───
-    _default_universe: Tuple[str, ...] = (
-        'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'NVDA',
-        'TSLA', 'AMD', 'QQQ', 'JNJ',
-        'WMT', 'PG', 'HD', 'DIS', 'NFLX',
-        'INTC', 'CRM', 'ORCL', 'CSCO', 'RKLB',
-        'ASTS',
-    )
+    _default_universe: Tuple[str, ...] = ('QQQ', 'AAPL', 'MSFT', 'NVDA', 'AMZN', 'GOOGL', 'META')
     
     @property
     def universe(self) -> Tuple[str, ...]:
         val = os.environ.get("UNIVERSE")
         if val:
-            return tuple(v.strip().upper() for v in val.split(",")
-                         if v.strip() and v.strip().upper() != 'SPY')
+            liquid = set(self._default_universe)
+            selected = tuple(v.strip().upper() for v in val.split(",")
+                             if v.strip().upper() in liquid)
+            return selected or self._default_universe
         return self._default_universe
     
     # ─── Backtest ────────────────────────────────────────────────

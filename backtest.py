@@ -63,6 +63,9 @@ def replay(symbol, bars, slippage_bps=1.0):
         state.balance += pnl
         state.daily_pnl += pnl
         state.consecutive_losses = state.consecutive_losses + 1 if pnl < 0 else 0
+        state.last_trade_at = feed.now.isoformat()
+        if pnl < 0:
+            state.last_sl_at = feed.now.isoformat()
         trades.append({'symbol': symbol, 'entry': position.entry_price, 'exit': fill,
                        'shares': position.shares, 'pnl': pnl, 'reason': reason,
                        'fill_risk': position.initial_risk * position.shares})
