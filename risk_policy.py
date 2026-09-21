@@ -13,7 +13,8 @@ def position_size(entry: float, stop: float, equity: float, buying_power: float)
         return 0
     price = Decimal(str(entry))
     distance = abs(price - Decimal(str(stop)))
-    risk_qty = min(Decimal('50'), Decimal(str(config.risk_per_trade))) / distance
+    hard_cap = min(Decimal('50'), Decimal(str(config.risk_per_trade)))
+    risk_qty = hard_cap * Decimal(str(config.execution_risk_buffer)) / distance
     value_cap = Decimal(str(buying_power))
     return int(min(risk_qty, value_cap / price).to_integral_value(rounding=ROUND_FLOOR))
 

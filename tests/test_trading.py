@@ -73,24 +73,24 @@ def test_state_roundtrip_and_remove_last_position():
 
 
 @pytest.mark.parametrize('entry,stop,equity,power,expected', [
-    (10, 9, 20000, 20000, 50), (100, 98, 20000, 20000, 25),
+    (10, 9, 20000, 20000, 45), (100, 98, 20000, 20000, 22),
     (100, 99, 20000, 50, 0), (100, 40, 20000, 20000, 0),
-    (100, 100, 20000, 20000, 0), (10, 10.3, 20000, 20000, 166),
+    (100, 100, 20000, 20000, 0), (10, 10.3, 20000, 20000, 150),
 ])
-def test_fifty_dollar_planned_risk(entry, stop, equity, power, expected):
+def test_planned_risk_reserves_execution_buffer(entry, stop, equity, power, expected):
     qty = position_size(entry, stop, equity, power)
     assert qty == expected
-    assert qty * abs(entry - stop) <= 50 + 1e-9
+    assert qty * abs(entry - stop) <= 45 + 1e-9
 
 
 @pytest.mark.parametrize('entry,stop,expected', [
-    (251.40, 250.89, 98),
-    (212.66, 212.10, 89),
+    (251.40, 250.89, 88),
+    (212.66, 212.10, 80),
 ])
 def test_fixed_risk_is_not_reduced_by_portfolio_percentage(entry, stop, expected):
     qty = position_size(entry, stop, 100_000, 300_000)
     assert qty == expected
-    assert 49 <= qty * abs(entry - stop) <= 50
+    assert 44 <= qty * abs(entry - stop) <= 45
 
 
 def test_session_rollover_keeps_positions_and_resets_once():
@@ -146,7 +146,7 @@ def test_actual_adapter_request_side(side):
 
 def test_environment_cannot_raise_risk_above_fifty(monkeypatch):
     monkeypatch.setattr(config, 'risk_per_trade', 500)
-    assert position_size(100, 99, 100000, 100000) == 50
+    assert position_size(100, 99, 100000, 100000) == 45
 
 
 def test_wrong_side_stop_is_rejected(runtime):
@@ -390,6 +390,11 @@ def test_yfinance_request_includes_current_day_and_is_cached(monkeypatch):
 
 def test_signal_has_two_r_target_and_no_directionless_trade():
     feed = Mock()
+    frame = bars()
+    frame.loc[frame.index[-2], 'Close'] = 97
+    frame.loc[frame.index[-1], 'Close'] = 98
+    qqq = bars()
+    feed.get_bars_yfinance.side_effect = lambda symbol, days=5: qqq if symbol == 'QQQ' else frame
     feed.get_latest_price.return_value = 98
     feed.get_volume_ratio.return_value = 2
     feed.get_adx.return_value = 20
@@ -406,6 +411,7 @@ def test_signal_has_two_r_target_and_no_directionless_trade():
 
 def test_mean_reversion_signal_is_blocked_in_strong_trend():
     feed = Mock()
+    feed.get_bars_yfinance.return_value = bars()
     feed.get_latest_price.return_value = 98
     feed.get_volume_ratio.return_value = 2
     feed.get_adx.return_value = 30
@@ -416,6 +422,46 @@ def test_mean_reversion_signal_is_blocked_in_strong_trend():
         'is_narrow': True, 'range_pct': .2})
     strategy.is_execution_window = Mock(return_value=True)
     assert strategy.generate_signal('QQQ') is None
+
+
+def test_signal_requires_actual_reversal_confirmation():
+    feed = Mock()
+    frame = bars()
+    frame.loc[frame.index[-2], 'Close'] = 99
+    frame.loc[frame.index[-1], 'Close'] = 98
+    feed.get_bars_yfinance.return_value = frame
+    feed.get_latest_price.return_value = 98
+    feed.get_volume_ratio.return_value = 2
+    feed.get_adx.return_value = 15
+    feed.get_atr.return_value = 1
+    strategy = InstitutionalStrategy(feed)
+    strategy.calculate_vwap_bands = Mock(return_value={
+        'vwap': 100, 'upper': 101, 'lower': 99, 'std_dev': 1})
+    strategy.calculate_opening_range = Mock(return_value={
+        'is_narrow': True, 'range_pct': .2})
+    strategy.is_execution_window = Mock(return_value=True)
+    assert strategy.generate_signal('AAPL') is None
+
+
+def test_market_alignment_blocks_short_against_rising_qqq():
+    feed = Mock()
+    stock = bars()
+    stock.loc[stock.index[-2], 'Close'] = 103
+    stock.loc[stock.index[-1], 'Close'] = 102
+    qqq = bars()
+    qqq['Close'] = [100 + i * .1 for i in range(len(qqq))]
+    feed.get_bars_yfinance.side_effect = lambda symbol, days=5: qqq if symbol == 'QQQ' else stock
+    feed.get_latest_price.return_value = 102
+    feed.get_volume_ratio.return_value = 2
+    feed.get_adx.return_value = 15
+    feed.get_atr.return_value = 1
+    strategy = InstitutionalStrategy(feed)
+    strategy.calculate_vwap_bands = Mock(return_value={
+        'vwap': 100, 'upper': 101, 'lower': 99, 'std_dev': 1})
+    strategy.calculate_opening_range = Mock(return_value={
+        'is_narrow': True, 'range_pct': .2})
+    strategy.is_execution_window = Mock(return_value=True)
+    assert strategy.generate_signal('AAPL') is None
 
 
 def test_backtest_calls_live_signal_generator(monkeypatch):

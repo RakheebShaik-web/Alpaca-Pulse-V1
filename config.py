@@ -33,6 +33,9 @@ class StrategyConfig:
     # ─── Capital & Risk ───────────────────────────────────────────
     capital: float = _env_float("CAPITAL", 20_000)
     risk_per_trade: float = _env_float("RISK_PER_TRADE", 50)
+    # Stops can slip through their trigger. Plan below the hard $50 ceiling so
+    # ordinary execution noise does not turn a $50 plan into a $54 fill.
+    execution_risk_buffer: float = max(0.5, min(_env_float("EXECUTION_RISK_BUFFER", 0.90), 1.0))
     rr_ratio: float = _env_float("RR_RATIO", 2.0)
     max_trades_per_day: int = min(_env_int("MAX_TRADES_PER_DAY", 2), 2)
     max_daily_loss: float = min(_env_float("MAX_DAILY_LOSS", 100), 100)
@@ -68,6 +71,7 @@ class StrategyConfig:
     
     # ─── Market Regime Filter ────────────────────────────────────
     regime_filter: bool = _env_str("REGIME_FILTER", "true").lower() == "true"
+    market_alignment_filter: bool = _env_str("MARKET_ALIGNMENT_FILTER", "true").lower() == "true"
     adx_trend_threshold: float = _env_float("ADX_TREND_THRESHOLD", 25.0)
     
     # ─── Max Drawdown Halt ───────────────────────────────────────

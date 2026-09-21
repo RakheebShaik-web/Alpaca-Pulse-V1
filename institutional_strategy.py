@@ -219,6 +219,31 @@ class InstitutionalStrategy:
         # Afternoon window: 2:00-3:30 PM ET
         afternoon = config.afternoon_window_start <= now <= config.afternoon_window_end
         return morning or afternoon
+
+    @staticmethod
+    def _reversal_confirmed(direction: SignalDirection, price: float, bars) -> bool:
+        """Require the latest completed bar to move back toward VWAP."""
+        if not isinstance(bars, pd.DataFrame) or len(bars) < 2:
+            return False
+        previous = float(bars['Close'].iloc[-2])
+        return previous < price if direction == SignalDirection.LONG else previous > price
+
+    def _market_allows(self, direction: SignalDirection) -> bool:
+        """Do not fade an established QQQ move in the opposite direction."""
+        if not config.market_alignment_filter:
+            return True
+        bars = self.data_feed.get_bars_yfinance('QQQ', days=1)
+        if not isinstance(bars, pd.DataFrame) or len(bars) < 20:
+            return False
+        closes = bars['Close'].astype(float).tail(20)
+        ema = closes.ewm(span=20, adjust=False).mean()
+        slope = float(ema.iloc[-1] - ema.iloc[-4])
+        above = float(closes.iloc[-1]) > float(ema.iloc[-1])
+        if direction == SignalDirection.SHORT and above and slope > 0:
+            return False
+        if direction == SignalDirection.LONG and not above and slope < 0:
+            return False
+        return True
     
     def generate_signal(self, symbol: str) -> Optional[Signal]:
         """Generate a signal using multi-factor scoring."""
@@ -268,15 +293,17 @@ class InstitutionalStrategy:
             if self.is_execution_window():
                 score += 1
             
-            # Factor 5: The latest completed bar is moving back toward VWAP.
-            # A same-bar VWAP crossing contradicts the deviation condition above.
+            # Factor 5 is a gate, not an optional score. A stretched price is not
+            # a reversal until a completed bar actually turns back toward VWAP.
             bars = self.data_feed.get_bars_yfinance(symbol, days=1)
-            if isinstance(bars, pd.DataFrame) and len(bars) >= 2:
-                previous = float(bars['Close'].iloc[-2])
-                if direction == SignalDirection.LONG and previous < price:
-                    score += 2
-                elif direction == SignalDirection.SHORT and previous > price:
-                    score += 2
+            if direction is None or not self._reversal_confirmed(direction, price, bars):
+                return None
+            score += 2
+
+            # Market alignment: avoid shorting leaders while QQQ is trending up,
+            # or buying dips while QQQ is trending down.
+            if not self._market_allows(direction):
+                return None
             
             # Factor 6: regime gate. This strategy fades VWAP extremes, so strong
             # trends are hostile: price can keep running away from VWAP.
