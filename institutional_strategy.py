@@ -139,6 +139,28 @@ class InstitutionalStrategy:
         self.positions: Dict[str, Position] = {}
         self.portfolio_peak: float = 20000.0
         self.daily_peak: float = 0.0
+        self.scan_decisions = []
+        self.last_rejection = None
+
+    def reject(self, reason):
+        self.last_rejection = reason
+        return None
+
+    def fresh_bars(self, symbol):
+        bars = self.data_feed.get_bars_yfinance(symbol, days=5)
+        if not isinstance(bars, pd.DataFrame) or bars.empty:
+            return False
+        now = pd.Timestamp(self.clock())
+        if now.tzinfo is not None:
+            now = now.tz_convert('America/New_York').tz_localize(None)
+        last = pd.Timestamp(bars.index[-1])
+        if last.tzinfo is not None:
+            last = last.tz_convert('America/New_York').tz_localize(None)
+        age = (now - (last + pd.Timedelta(minutes=1))).total_seconds()
+        values = bars[['Open', 'High', 'Low', 'Close', 'Volume']].tail(20)
+        return (0 <= age <= 120 and last.date() == now.date()
+                and np.isfinite(values.to_numpy(dtype=float)).all()
+                and (values[['Open', 'High', 'Low', 'Close']] > 0).all().all())
     
     def calculate_vwap(self, symbol: str) -> Optional[float]:
         """Calculate VWAP."""
@@ -247,13 +269,14 @@ class InstitutionalStrategy:
     
     def generate_signal(self, symbol: str) -> Optional[Signal]:
         """Generate a signal using multi-factor scoring."""
+        self.last_rejection = None
         try:
             # Prime one shared snapshot used by every indicator this cycle.
             if self.data_feed.get_bars_yfinance(symbol, days=5) is None:
-                return None
+                return self.reject('missing_bars')
             price = self.data_feed.get_latest_price(symbol)
             if not price:
-                return None
+                return self.reject('missing_price')
             
             vwap_bands = self.calculate_vwap_bands(symbol)
             or_data = self.calculate_opening_range(symbol)
@@ -261,7 +284,7 @@ class InstitutionalStrategy:
             adx = self.data_feed.get_adx(symbol)
             
             if not all([vwap_bands, or_data, volume_ratio]):
-                return None
+                return self.reject('missing_indicators')
             
             vwap = vwap_bands['vwap']
             upper_band = vwap_bands['upper']
@@ -297,24 +320,24 @@ class InstitutionalStrategy:
             # a reversal until a completed bar actually turns back toward VWAP.
             bars = self.data_feed.get_bars_yfinance(symbol, days=1)
             if direction is None or not self._reversal_confirmed(direction, price, bars):
-                return None
+                return self.reject('no_deviation' if direction is None else 'no_reversal')
             score += 2
 
             # Market alignment: avoid shorting leaders while QQQ is trending up,
             # or buying dips while QQQ is trending down.
             if not self._market_allows(direction):
-                return None
+                return self.reject('market_alignment')
             
             # Factor 6: regime gate. This strategy fades VWAP extremes, so strong
             # trends are hostile: price can keep running away from VWAP.
             if config.regime_filter:
                 if adx is None or adx > config.adx_trend_threshold:
-                    return None
+                    return self.reject('trend_regime_or_missing_adx')
                 score += 1
 
             # ─── Minimum Score Gate ─────────────────────────────────
             if direction is None or score < config.min_score_to_trade:
-                return None
+                return self.reject('score_below_threshold')
             
             # ─── Calculate Stop/Target ──────────────────────────────
             atr = self.data_feed.get_atr(symbol, config.atr_length) or (price * 0.005)
@@ -345,15 +368,22 @@ class InstitutionalStrategy:
             
         except Exception as e:
             logger.error(f"Signal generation error for {symbol}: {e}")
-            return None
+            return self.reject('signal_error')
     
     def generate_all_signals(self) -> List[Signal]:
         """Generate signals for all symbols."""
         signals = []
+        self.scan_decisions = []
         for symbol in config.universe:
             if symbol in self.positions:
+                self.scan_decisions.append({'symbol': symbol, 'decision': 'rejected', 'reason': 'position_exists'})
+                continue
+            if not self.fresh_bars(symbol) or (config.market_alignment_filter and not self.fresh_bars('QQQ')):
+                self.scan_decisions.append({'symbol': symbol, 'decision': 'rejected', 'reason': 'stale_or_invalid_data'})
                 continue
             signal = self.generate_signal(symbol)
+            self.scan_decisions.append({'symbol': symbol, 'decision': 'qualified' if signal else 'rejected',
+                                        'reason': 'entry_rules_passed' if signal else self.last_rejection or 'no_signal'})
             if signal:
                 signals.append(signal)
         signals.sort(key=lambda x: x.score, reverse=True)

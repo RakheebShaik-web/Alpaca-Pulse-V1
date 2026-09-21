@@ -290,6 +290,11 @@ async def get_scan():
     return runtime.last_scan
 
 
+@app.get('/api/entry-decisions')
+async def get_entry_decisions():
+    return runtime.last_decisions
+
+
 @app.get('/api/clock')
 async def get_clock():
     clock = system.trader.get_clock()

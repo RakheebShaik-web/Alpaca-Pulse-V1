@@ -31,6 +31,14 @@ class TradingRuntime:
         self.last_scan_at = None
         self.last_scan_error = None
         self.last_cycle_at = None
+        self.last_decisions = []
+
+    def record_decision(self, symbol, decision, reason):
+        item = {'timestamp': self.system.strategy.clock().isoformat(), 'symbol': symbol,
+                'decision': decision, 'reason': reason}
+        self.last_decisions.append(item)
+        self.last_decisions = self.last_decisions[-200:]
+        logger.info('ENTRY_DECISION %s', item)
 
     @property
     def state(self):
@@ -268,16 +276,23 @@ class TradingRuntime:
 
     def submit_entry(self, signal, equity, buying_power):
         from math import isfinite
+        if self.state.all_positions():
+            self.record_decision(signal.symbol, 'rejected', 'position_or_pending_entry_exists')
+            return
         if not all(isfinite(v) and v > 0 for v in (signal.price, signal.stop, signal.target)):
+            self.record_decision(signal.symbol, 'rejected', 'invalid_levels')
             return
         if signal.direction == SignalDirection.LONG:
             if not signal.stop < signal.price < signal.target:
+                self.record_decision(signal.symbol, 'rejected', 'invalid_level_order')
                 return
         elif not signal.target < signal.price < signal.stop:
+            self.record_decision(signal.symbol, 'rejected', 'invalid_level_order')
             return
         side = {SignalDirection.LONG: OrderSide.BUY, SignalDirection.SHORT: OrderSide.SELL}[signal.direction]
         qty = position_size(signal.price, signal.stop, equity, buying_power)
         if qty <= 0:
+            self.record_decision(signal.symbol, 'rejected', 'insufficient_risk_budget_or_buying_power')
             return
         p = new_position(signal.symbol, signal.direction.value, signal.price, qty,
                          signal.stop, signal.target)
@@ -291,6 +306,7 @@ class TradingRuntime:
                 signal.symbol, qty, side, signal.stop, signal.target,
                 client_order_id=p.entry_client_id, entry_limit=signal.price)
         except OrderRejected:
+            self.record_decision(signal.symbol, 'rejected', 'broker_rejected')
             self.state.remove_position(p.position_id)
             self.state.trades_today = max(0, self.state.trades_today - 1)
             self.persist()
@@ -298,6 +314,8 @@ class TradingRuntime:
             raise
         if result:
             p.entry_order_id = result['id']
+        self.record_decision(signal.symbol, 'submitted' if result else 'pending',
+                             'entry_rules_and_risk_passed' if result else 'submission_unconfirmed')
         self.persist()
         self.restore_strategy()
 
@@ -329,6 +347,8 @@ class TradingRuntime:
         buying_power = account['buying_power']
         try:
             signals = self.system.strategy.generate_all_signals()
+            for item in self.system.strategy.scan_decisions:
+                self.record_decision(item['symbol'], item['decision'], item['reason'])
             self.last_scan = [vars(signal).copy() for signal in signals]
             for item in self.last_scan:
                 item['direction'] = item['direction'].value
@@ -340,13 +360,17 @@ class TradingRuntime:
             self.last_scan_error = str(exc)
             raise
         for signal in signals:
-            if len(self.state.all_positions()) >= 3 or self.state.trades_today >= config.max_trades_per_day:
-                break
+            if self.state.all_positions() or self.state.trades_today >= config.max_trades_per_day:
+                self.record_decision(signal.symbol, 'rejected', 'position_or_daily_limit')
+                continue
             if signal.symbol in self.state.positions or skip_symbol(signal.symbol):
+                self.record_decision(signal.symbol, 'rejected', 'symbol_excluded')
                 continue
             if not self.system.strategy.check_sector_exposure(signal.symbol):
+                self.record_decision(signal.symbol, 'rejected', 'sector_exposure')
                 continue
             if self.system.trader.open_orders(signal.symbol):
+                self.record_decision(signal.symbol, 'rejected', 'open_orders')
                 continue
             self.submit_entry(signal, equity, buying_power)
             records = self.state.positions.get(signal.symbol, [])
