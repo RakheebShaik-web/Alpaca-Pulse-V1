@@ -44,14 +44,15 @@ Yeah, the returns look small. That's the point. I'd rather make $50/day consiste
 
 **Entry:**
 - VWAP deviation > 1.5 std dev
-- Volume > 1.5x average
+- Volume confirmation
 - Narrow opening range (< 0.3%)
-- Price reverts through VWAP (confirmation)
+- Latest completed bar moves back toward VWAP
+- ADX at or below 25 (range/transition regime)
 - Score 4+/8 points
 
 **Position sizing:**
-- Exactly $50 per trade
-- Max 3 positions
+- No more than $50 planned risk per trade; realized losses can exceed this through gaps or slippage
+- Max 2 new trades per day
 - Max 10% of capital per name
 
 **Exit:**
@@ -61,9 +62,10 @@ Yeah, the returns look small. That's the point. I'd rather make $50/day consiste
 - 3:50 PM hard close
 
 **When it stays in cash:**
-- Choppy market (ADX < 15)
-- Max daily loss hit ($200)
-- 3 consecutive losses
+- Strong trend (ADX > 25)
+- Max daily loss hit ($100)
+- 2 consecutive losses
+- For 45 minutes after a losing exit
 - Account drawdown > 5%
 - It's 2 PM on Friday and nothing makes sense
 

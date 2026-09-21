@@ -392,7 +392,7 @@ def test_signal_has_two_r_target_and_no_directionless_trade():
     feed = Mock()
     feed.get_latest_price.return_value = 98
     feed.get_volume_ratio.return_value = 2
-    feed.get_adx.return_value = 30
+    feed.get_adx.return_value = 20
     feed.get_atr.return_value = 1
     strategy = InstitutionalStrategy(feed)
     strategy.calculate_vwap_bands = Mock(return_value={'vwap':100, 'upper':101, 'lower':99, 'std_dev':1})
@@ -402,6 +402,20 @@ def test_signal_has_two_r_target_and_no_directionless_trade():
     assert result.target - result.price == pytest.approx(2 * (result.price - result.stop))
     feed.get_latest_price.return_value = 100
     assert strategy.generate_signal('SPY') is None
+
+
+def test_mean_reversion_signal_is_blocked_in_strong_trend():
+    feed = Mock()
+    feed.get_latest_price.return_value = 98
+    feed.get_volume_ratio.return_value = 2
+    feed.get_adx.return_value = 30
+    strategy = InstitutionalStrategy(feed)
+    strategy.calculate_vwap_bands = Mock(return_value={
+        'vwap': 100, 'upper': 101, 'lower': 99, 'std_dev': 1})
+    strategy.calculate_opening_range = Mock(return_value={
+        'is_narrow': True, 'range_pct': .2})
+    strategy.is_execution_window = Mock(return_value=True)
+    assert strategy.generate_signal('QQQ') is None
 
 
 def test_backtest_calls_live_signal_generator(monkeypatch):

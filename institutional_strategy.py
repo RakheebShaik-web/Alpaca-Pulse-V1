@@ -7,7 +7,7 @@ Alpha sources:
 3. Volume confirmation (institutional participation)
 4. Time-of-day execution windows (when institutions are active)
 5. Multi-factor scoring (only high-conviction trades)
-6. ADX trend filter (avoid choppy markets)
+6. ADX range-regime gate (avoid fading strong trends)
 7. Trailing stops (lock in profits)
 8. Breakeven activation (protect capital)
 """
@@ -278,11 +278,12 @@ class InstitutionalStrategy:
                 elif direction == SignalDirection.SHORT and previous > price:
                     score += 2
             
-            # Factor 6: ADX trend filter (BLOCK choppy markets)
+            # Factor 6: regime gate. This strategy fades VWAP extremes, so strong
+            # trends are hostile: price can keep running away from VWAP.
             if config.regime_filter:
-                if adx is None or adx < config.adx_trend_threshold:
-                    return None  # Don't trade choppy/unknown markets
-                score += 1  # Bonus for confirmed trending market
+                if adx is None or adx > config.adx_trend_threshold:
+                    return None
+                score += 1
 
             # ─── Minimum Score Gate ─────────────────────────────────
             if direction is None or score < config.min_score_to_trade:
