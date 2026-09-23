@@ -285,6 +285,12 @@ class InstitutionalStrategy:
             
             if not all([vwap_bands, or_data, volume_ratio]):
                 return self.reject('missing_indicators')
+
+            # Required entry conditions cannot be offset by other score points.
+            if not np.isfinite(volume_ratio) or volume_ratio < config.min_volume_mult:
+                return self.reject('insufficient_or_invalid_volume')
+            if not or_data['is_narrow']:
+                return self.reject('opening_range_not_narrow')
             
             vwap = vwap_bands['vwap']
             upper_band = vwap_bands['upper']
@@ -331,7 +337,8 @@ class InstitutionalStrategy:
             # Factor 6: regime gate. This strategy fades VWAP extremes, so strong
             # trends are hostile: price can keep running away from VWAP.
             if config.regime_filter:
-                if adx is None or adx > config.adx_trend_threshold:
+                if (adx is None or not np.isfinite(adx) or adx < 0
+                        or adx > config.adx_trend_threshold):
                     return self.reject('trend_regime_or_missing_adx')
                 score += 1
 

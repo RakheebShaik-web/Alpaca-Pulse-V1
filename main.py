@@ -168,23 +168,31 @@ async def get_positions():
             for p in system.trader.get_positions()]
 
 
+def summarize_closed_records(records):
+    """Count completed positions from the same ledger used by the trade table."""
+    pnls = [float(row['pnl']) for row in records
+            if row.get('status') == 'closed' and row.get('pnl') is not None]
+    wins = [p for p in pnls if p > 0]
+    losses = [p for p in pnls if p < 0]
+    return {'total_trades': len(pnls), 'wins': len(wins), 'losses': len(losses),
+            'breakeven': sum(p == 0 for p in pnls),
+            'total_pnl': round(sum(pnls), 2),
+            'avg_win': round(sum(wins) / len(wins), 2) if wins else 0.0,
+            'avg_loss': round(sum(losses) / len(losses), 2) if losses else 0.0,
+            'win_rate': round(len(wins) / len(pnls) * 100, 1) if pnls else 0.0}
+
+
 @app.get('/api/trades')
-@app.get('/api/daily')
 def get_trades():
-    summary = get_trade_summary()
+    return summarize_closed_records(get_csv_trade_records())
+
+
+@app.get('/api/daily')
+def get_daily():
     today = get_et_now().date().isoformat()
-    closed = [row for row in get_trade_logs()
-              if row.get('pnl') is not None and (row.get('time_et') or '').startswith(today)]
-    if closed:
-        pnls = [float(row['pnl']) for row in closed]
-        summary.update({'total_trades': len(pnls), 'wins': sum(p > 0 for p in pnls),
-                        'losses': sum(p <= 0 for p in pnls),
-                        'total_pnl': round(sum(pnls), 2),
-                        'avg_win': round(sum(p for p in pnls if p > 0) / max(1, sum(p > 0 for p in pnls)), 2),
-                        'avg_loss': round(sum(p for p in pnls if p <= 0) / max(1, sum(p <= 0 for p in pnls)), 2)})
-    total = summary.get('total_trades', 0)
-    summary['win_rate'] = round(summary.get('wins', 0) / total * 100, 1) if total else 0.0
-    return summary
+    return summarize_closed_records([
+        row for row in get_csv_trade_records()
+        if (row.get('exit_time_et') or '').startswith(today)])
 
 
 @app.get('/api/trade-records')
@@ -234,12 +242,14 @@ def get_trade_logs():
             })
         return sorted(recovered, key=lambda row: row['time'], reverse=True)
     return [{
-        'time': row.get('timestamp'), 'time_et': row.get('entry_time_et'),
+        'time': row.get('exit_time') if row.get('status') == 'closed' else row.get('timestamp'),
+        'time_et': row.get('exit_time_et') if row.get('status') == 'closed' else row.get('entry_time_et'),
         'symbol': row.get('symbol'),
         'event': ('ENTRY_' + row.get('side', '').upper()) if row.get('status') == 'open'
                  else row.get('exit_reason_label'),
         'side': row.get('side'), 'price': row.get('exit_price') or row.get('entry_price'),
-        'shares': row.get('shares'), 'pnl': row.get('pnl'),
+        'shares': row.get('shares'),
+        'pnl': row.get('pnl') if row.get('status') == 'closed' else None,
     } for row in records]
 
 
@@ -253,10 +263,11 @@ def get_closed_positions():
 def get_pnl_curve():
     total = 0.0
     curve = []
-    for row in reversed(get_csv_trade_records()):
-        if row.get('status') == 'closed':
-            total += row.get('pnl', 0)
-            curve.append({'time': row.get('exit_time_et'), 'pnl': round(total, 2)})
+    closed = [row for row in get_csv_trade_records()
+              if row.get('status') == 'closed' and row.get('pnl') is not None]
+    for row in sorted(closed, key=lambda row: row.get('exit_time_et') or ''):
+        total += float(row['pnl'])
+        curve.append({'time': row.get('exit_time_et'), 'pnl': round(total, 2)})
     return curve
 
 
