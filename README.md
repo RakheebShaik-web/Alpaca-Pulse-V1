@@ -26,20 +26,6 @@ Some days it won't trade at all. That's the point. Professional traders wait day
 
 ---
 
-## Backtested performance (6 months, $20k paper)
-
-| Symbol | Return | Win Rate | Trades | Max DD |
-|--------|--------|----------|--------|--------|
-| AMZN | +2.19% | 50% | 14 | 0.34% |
-| SPY | +1.12% | 58% | 12 | 0.38% |
-| AAPL | +1.09% | 62% | 21 | 0.39% |
-| GOOGL | +0.97% | 60% | 15 | 0.49% |
-| AMD | +0.48% | 45% | 20 | 0.57% |
-
-Yeah, the returns look small. That's the point. I'd rather make $50/day consistently than $500 one day and lose $400 the next.
-
----
-
 ## The rules
 
 **Entry:**
