@@ -470,7 +470,7 @@ def test_backtest_calls_live_signal_generator(monkeypatch):
         calls.append(self.data_feed.now)
         return None
     monkeypatch.setattr(InstitutionalStrategy, 'generate_signal', generate)
-    result = replay('SPY', bars())
+    result = replay('SPY', bars(), market_bars=bars())
     assert calls and result['strategy'] == 'InstitutionalStrategy'
     assert result['total_trades'] == 0
 

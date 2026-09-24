@@ -29,26 +29,35 @@ def fetch_yahoo_data(symbol, days=7):
 
 
 class ReplayFeed(DataFeed):
-    def __init__(self, bars):
+    def __init__(self, bars, symbol='SPY', market_bars=None):
         self.bars = bars
+        self.symbol = symbol
+        self.market_bars = market_bars
         self.now = bars.index[0]
 
     def get_bars_yfinance(self, symbol, days=5):
         start = self.now - pd.Timedelta(days=min(days + 3, 7))
-        return self.bars.loc[(self.bars.index >= start) &
-                             (self.bars.index + pd.Timedelta(minutes=1) <= self.now)]
+        source = self.bars if symbol == self.symbol else self.market_bars if symbol == 'QQQ' else None
+        if source is None:
+            return pd.DataFrame(columns=self.bars.columns)
+        return source.loc[(source.index >= start) &
+                          (source.index + pd.Timedelta(minutes=1) <= self.now)]
 
     def get_latest_price(self, symbol):
         bars = self.get_bars_yfinance(symbol)
         return float(bars['Close'].iloc[-1]) if len(bars) else None
 
 
-def replay(symbol, bars, slippage_bps=1.0):
+def replay(symbol, bars, slippage_bps=1.0, market_bars=None, strategy_class=InstitutionalStrategy):
     if slippage_bps < 0:
         raise ValueError('Slippage must be nonnegative')
     bars = normalize_bars(bars)
-    feed = ReplayFeed(bars)
-    strategy = InstitutionalStrategy(feed, clock=lambda: feed.now.to_pydatetime())
+    if market_bars is not None:
+        market_bars = normalize_bars(market_bars)
+    if symbol != 'QQQ' and config.market_alignment_filter and market_bars is None:
+        raise ValueError('QQQ bars are required for the market alignment filter')
+    feed = ReplayFeed(bars, symbol, market_bars)
+    strategy = strategy_class(feed, clock=lambda: feed.now.to_pydatetime())
     strategy.portfolio_peak = config.capital
     state = BotState(balance=config.capital)
     pending = None
@@ -66,27 +75,42 @@ def replay(symbol, bars, slippage_bps=1.0):
         state.last_trade_at = feed.now.isoformat()
         if pnl < 0:
             state.last_sl_at = feed.now.isoformat()
-        trades.append({'symbol': symbol, 'entry': position.entry_price, 'exit': fill,
+        trades.append({'symbol': symbol, 'entry_time': position.entry_time.isoformat(),
+                       'exit_time': feed.now.isoformat(), 'entry': position.entry_price, 'exit': fill,
                        'shares': position.shares, 'pnl': pnl, 'reason': reason,
                        'fill_risk': position.initial_risk * position.shares})
         strategy.close_position(symbol)
 
     for timestamp, bar in bars.iterrows():
         feed.now = timestamp
-        reset_session(state, timestamp)
+        if reset_session(state, timestamp):
+            pending = None
         if not pd.Timestamp('09:30').time() <= timestamp.time() < pd.Timestamp('16:00').time():
             pending = None
+            continue
+        if timestamp.time() >= config.hard_close_time:
+            pending = None
+            position = strategy.positions.get(symbol)
+            if position:
+                close(position, float(bar.Open), 'close_eod')
+            equity = state.balance
+            peak = max(peak, equity)
+            max_dd = max(max_dd, (peak - equity) / peak * 100)
             continue
         if pending is not None:
             if entries_allowed(state, strategy, state.balance):
                 sign = 1 if pending.direction == SignalDirection.LONG else -1
+                # Only fill marketable limits at the next bar open. Intrabar
+                # touch fills are omitted because their ordering is unknown.
                 fill = float(bar.Open) * (1 + sign * slippage_bps / 10000)
+                marketable = fill <= pending.price if sign == 1 else fill >= pending.price
                 valid = pending.stop < fill < pending.target if sign == 1 else pending.target < fill < pending.stop
                 qty = position_size(pending.price, pending.stop, state.balance, state.balance)
-                if valid and qty > 0:
+                if marketable and valid and qty > 0:
                     strategy.add_position(symbol, pending.direction, fill, qty, pending.stop, pending.target)
+                    strategy.positions[symbol].entry_time = timestamp.to_pydatetime()
                     state.trades_today += 1
-            pending = None
+                    pending = None
         position = strategy.positions.get(symbol)
         if position:
             sign = 1 if position.direction == SignalDirection.LONG else -1
@@ -111,22 +135,30 @@ def replay(symbol, bars, slippage_bps=1.0):
         equity = state.balance + unrealized
         peak = max(peak, equity)
         max_dd = max(max_dd, (peak - equity) / peak * 100)
-        if not position and entries_allowed(state, strategy, equity):
+        if not position and pending is None and entries_allowed(state, strategy, equity):
             pending = strategy.generate_signal(symbol)
     wins = [t['pnl'] for t in trades if t['pnl'] > 0]
     losses = [t['pnl'] for t in trades if t['pnl'] < 0]
-    return {'strategy': 'InstitutionalStrategy', 'symbol': symbol, 'final_value': equity,
+    return {'strategy': strategy_class.__name__, 'symbol': symbol, 'final_value': equity,
             'total_return': (equity / config.capital - 1) * 100, 'total_trades': len(trades),
             'win_rate': len(wins) / len(trades) if trades else 0,
             'profit_factor': sum(wins) / abs(sum(losses)) if losses else None,
             'max_drawdown': max_dd, 'open_positions': len(strategy.positions), 'trades': trades}
 
 
-def run_backtest(symbol='SPY', days=7, discord_webhook=None, csv_path=None):
+def run_backtest(symbol='SPY', days=7, discord_webhook=None, csv_path=None, market_csv_path=None):
     if discord_webhook:
         raise ValueError('Backtests do not send external notifications')
     bars = pd.read_csv(csv_path, index_col=0) if csv_path else fetch_yahoo_data(symbol, days)
-    report = replay(symbol, bars)
+    market_bars = None
+    if symbol != 'QQQ' and config.market_alignment_filter:
+        if market_csv_path:
+            market_bars = pd.read_csv(market_csv_path, index_col=0)
+        elif csv_path:
+            raise ValueError('Supply --market-csv with QQQ history when using --csv')
+        else:
+            market_bars = fetch_yahoo_data('QQQ', days)
+    report = replay(symbol, bars, market_bars=market_bars)
     print(json.dumps(report, indent=2))
     return report
 
@@ -136,5 +168,6 @@ if __name__ == '__main__':
     parser.add_argument('symbol', nargs='?', default='SPY')
     parser.add_argument('--days', type=int, default=7)
     parser.add_argument('--csv')
+    parser.add_argument('--market-csv', help='QQQ minute-bar CSV for market alignment')
     args = parser.parse_args()
-    run_backtest(args.symbol, args.days, csv_path=args.csv)
+    run_backtest(args.symbol, args.days, csv_path=args.csv, market_csv_path=args.market_csv)
